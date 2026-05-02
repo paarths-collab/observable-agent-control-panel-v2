@@ -2,7 +2,7 @@
 
 The **DevOps Agent** is the operational core of the system. It handles high-level reasoning, interacts with the semantic knowledge base, and executes tools against the external world (GitHub, Web). 
 
-## Ã°Å¸Ââ€”Ã¯Â¸Â System Structure
+## Architecture System Structure
 
 The agent is organized into modular layers, separating the user interface from the reasoning brain and the tooling hands.
 

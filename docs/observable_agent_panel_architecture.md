@@ -2,13 +2,13 @@
 
 The **Observable Agent Control Panel** is the diagnostic and monitoring layer of the system. It sits independently from the DevOps Agent, observing its SQLite trace logs and providing a combination of rule-based and LLM-powered analysis.
 
-## Ã°Å¸Ââ€”Ã¯Â¸Â System Structure
+## Architecture System Structure
 
 The panel acts as a visibility gateway, ensuring that every action taken by the executing agent or the IDE agent itself is recorded and searchable.
 
 ```mermaid
 graph TD
-    subgraph "Ã°Å¸â€Â Observable Agent Panel (`observable_agent_panel/`)"
+    subgraph "Observable Agent Panel (`observable_agent_panel/`)"
         direction TB
         
         SRV["server.py<br/>(MCP Entry Point)"]
