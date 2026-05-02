@@ -10,7 +10,7 @@
 
 <br/>
 
-### 📽️ [View the 6-Step Self-Healing Demo](demo/octaclaw_demo.mp4)
+### 📽️ [View the Demo](demo/octaclaw_demo.mp4)
 
 *(Click above to play the demo video)*
 
