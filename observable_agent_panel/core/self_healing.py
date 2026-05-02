@@ -31,7 +31,7 @@ def get_failure_candidates(limit: int = 5) -> List[Dict[str, Any]]:
         }
         for t in failures[:limit]
     ]
-    return summaries
+    return summaries, len(failures)
 
 def propose_fix(run_id: str, root_cause: str) -> Dict[str, Any]:
     """Rule-based fix proposal."""

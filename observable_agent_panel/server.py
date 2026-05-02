@@ -352,8 +352,8 @@ def get_failure_candidates(limit: int = 5) -> str:
     self-healing loop. Returns {failures: [...], total_found: N}.
     """
     from observable_agent_panel.core.self_healing import get_failure_candidates as _get_failures
-    failures = _get_failures(limit)
-    return json.dumps({"failures": failures, "total_found": len(failures)}, indent=2, ensure_ascii=True)
+    failures, total = _get_failures(limit)
+    return json.dumps({"failures": failures, "total_found": total}, indent=2, ensure_ascii=True)
 
 
 @mcp.tool()
