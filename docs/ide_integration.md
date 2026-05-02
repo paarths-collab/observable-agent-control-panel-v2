@@ -2,22 +2,22 @@
 
 Integrating the **Observable Agent Control Panel** into your AI-powered IDE (Cursor, Cline, Antigravity) allows you to bridge the gap between high-level reasoning and granular execution observability.
 
-## Ã°Å¸â€œÂ¡ The Connection Workflow
+## 📡 The Connection Workflow
 
 Your IDE communicates via the **Model Context Protocol (MCP)** to execute tools and read diagnostics from the Control Panel backend.
 
 ```mermaid
 flowchart LR
-    subgraph "Ã°Å¸â€™Â» Your Local IDE"
-        IDE["Ã°Å¸Â¤â€“ AI Agent<br/>(Antigravity / Cursor / Cline)"]
+    subgraph "💻 Your Local IDE"
+        IDE["🤖 AI Agent<br/>(Antigravity / Cursor / Cline)"]
     end
 
-    subgraph "Ã°Å¸Â§Â  Observable Agent Control Panel"
+    subgraph "🧠 Observable Agent Control Panel"
         direction TB
         SRV["server.py<br/>MCP stdio Gateway"]
-        TRACE[("Ã°Å¸â€œÅ  Trace DB<br/>(traces.db)")]
-        MEM[("Ã°Å¸â€™Â¾ Semantic Memory<br/>(memory.db)")]
-        TOOLS["Ã°Å¸â€ºÂ Ã¯Â¸Â Tool Registry<br/>(GitHub / Web)"]
+        TRACE[("📊 Trace DB<br/>(traces.db)")]
+        MEM[("💾 Semantic Memory<br/>(memory.db)")]
+        TOOLS["🛠️ Tool Registry<br/>(GitHub / Web)"]
         
         SRV <--> TRACE
         SRV <--> MEM
@@ -57,7 +57,7 @@ Antigravity uses a centralized `mcp_config.json` located at:
 
 ## 2. Cursor IDE
 
-1.  Open **Settings** (gear icon Ã¢Å¡â„¢Ã¯Â¸Â) -> **Features** -> **MCP Servers**.
+1.  Open **Settings** (gear icon ⚙️) -> **Features** -> **MCP Servers**.
 2.  Click **"+ Add New MCP Server"**.
 3.  **Name**: `observable-agent-control-panel`
 4.  **Type**: `command`
@@ -85,6 +85,8 @@ Add this entry to your `cline_mcp_settings.json`:
 ```
 
 ---
+
+## 💡 Why Integrate via MCP?
 
 *   **Native Tooling**: Your IDE agent gains access to **16 specialized tools**, including `search_memory` and `index_repo_prs`, directly from the chat window.
 *   **Persistent Observability**: Every tool call made by the IDE is logged into your local `traces.db`.

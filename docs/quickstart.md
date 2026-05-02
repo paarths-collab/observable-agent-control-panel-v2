@@ -1,21 +1,3 @@
-# Quick Start Ã¢â‚¬â€ Observable Agent Control Panel
-
-Welcome to the **Observable Agent Control Panel**. This guide will get you from a fresh clone to a running, observable DevOps agent in under 5 minutes.
-
-## Ã°Å¸â€œâ€¹ Prerequisites
-- **Python 3.11+**
-- **GROQ API Key**: [Get one here](https://console.groq.com/keys)
-- **GitHub Token**: (Optional but recommended) [Create here](https://github.com/settings/tokens)
-
----
-
-## Ã°Å¸â€ºÂ Ã¯Â¸Â Step 1: Environment Setup
-
-1. **Clone and Navigate**:
-   ```bash
-   git clone https://github.com/your-org/observable-agent-control-panel
-   cd observable-agent-control-panel
-   ```
 
 2. **Initialize Virtual Environment**:
    ```powershell

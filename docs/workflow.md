@@ -1,4 +1,4 @@
-# System Workflow & Logic Ã¢â‚¬â€ Observable Agent Control Panel
+# System Workflow & Logic — Observable Agent Control Panel
 
 This document details the end-to-end operational workflow of the system, from initial user query to automated self-healing and deep failure diagnosis.
 
@@ -8,11 +8,11 @@ The project is architecturally split into two halves: the **Executing Agent** (M
 
 ```mermaid
 graph TB
-    subgraph "Ã°Å¸â€˜Â¤ Engineer / IDE Agent"
+    subgraph "👤 Engineer / IDE Agent"
         Q["User Query / Audit Request"]
     end
 
-    subgraph "Ã°Å¸â€Â Observable Agent Panel (The Monitor)"
+    subgraph "🔍 Observable Agent Panel (The Monitor)"
         direction TB
         SRV["server.py<br/>MCP Entry Point"]
         ANA["analyzer.py<br/>Deep Diagnostic Engine"]

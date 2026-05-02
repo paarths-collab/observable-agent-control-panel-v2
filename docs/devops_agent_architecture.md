@@ -1,4 +1,4 @@
-# DevOps Agent Architecture Ã¢â‚¬â€ Deep Dive
+# DevOps Agent Architecture — Deep Dive
 
 The **DevOps Agent** is the operational core of the system. It handles high-level reasoning, interacts with the semantic knowledge base, and executes tools against the external world (GitHub, Web). 
 
@@ -8,13 +8,13 @@ The agent is organized into modular layers, separating the user interface from t
 
 ```mermaid
 graph TD
-    subgraph "Ã°Å¸Â¤â€“ DevOps Agent (`devops_agent/`)"
+    subgraph "🤖 DevOps Agent (`devops_agent/`)"
         direction TB
         
         MAIN["main.py<br/>(System Entry)"]
         CLI["cli.py<br/>(Interactive REPL + Diagnostics)"]
         
-        subgraph "Core Intelligence"
+        subgraph "💾 Persistence"
             ORCH["orchestrator.py<br/>(Repo-Aware Triage)"]
             LLM["llm_client.py<br/>(Groq / OpenAI API)"]
             

@@ -1,4 +1,4 @@
-# Observable Agent Panel Architecture Ã¢â‚¬â€ Deep Dive
+# Observable Agent Panel Architecture — Deep Dive
 
 The **Observable Agent Control Panel** is the diagnostic and monitoring layer of the system. It sits independently from the DevOps Agent, observing its SQLite trace logs and providing a combination of rule-based and LLM-powered analysis.
 
@@ -40,7 +40,7 @@ graph TD
     end
 ```
 
-## Ã°Å¸â€â€ž Diagnostic Workflow (Deep Healing)
+## 🔄 Diagnostic Workflow (Deep Healing)
 
 The panel now supports **Deep Failure Diagnosis**, which uses a Senior SRE reasoning model to synthesize multiple failures.
 
@@ -72,7 +72,7 @@ sequenceDiagram
 | **`trace_db.py`** | The "Record Keeper." Manages persistent execution traces. Now tracks **MCP tool hits** as individual runs. |
 | **`observability.py`** | The "Monitor." Aggregates system health, success rates, and active anomaly alerts. |
 
-## Ã°Å¸â€ºÂ Ã¯Â¸Â Key Capabilities
+## 🛠️ Key Capabilities
 *   **Unified Visibility**: Every tool call made by the IDE is now a first-class citizen in the trace database.
 *   **6-Step Self-Healing**: Automated detection and repair of knowledge gaps via both MCP and Interactive CLI.
 *   **Deep Failure Analysis**: LLM-powered diagnostics identify why an agent is stuck in loops (e.g., hitting the tool execution ceiling on unindexed repos).
