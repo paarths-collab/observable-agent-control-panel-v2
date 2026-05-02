@@ -1,14 +1,14 @@
-# DevOps Agent Architecture — Deep Dive
+# DevOps Agent Architecture Ã¢â‚¬â€ Deep Dive
 
 The **DevOps Agent** is the operational core of the system. It handles high-level reasoning, interacts with the semantic knowledge base, and executes tools against the external world (GitHub, Web). 
 
-## 🏗️ System Structure
+## Ã°Å¸Ââ€”Ã¯Â¸Â System Structure
 
 The agent is organized into modular layers, separating the user interface from the reasoning brain and the tooling hands.
 
 ```mermaid
 graph TD
-    subgraph "🤖 DevOps Agent (`devops_agent/`)"
+    subgraph "Ã°Å¸Â¤â€“ DevOps Agent (`devops_agent/`)"
         direction TB
         
         MAIN["main.py<br/>(System Entry)"]
@@ -44,7 +44,7 @@ graph TD
     end
 ```
 
-## 🔄 Interaction Workflows
+## Ã°Å¸â€â€ž Interaction Workflows
 
 ### 1. The Knowledge Boundary Workflow
 The agent now performs a strict scope check before entering expensive tool loops.
@@ -86,7 +86,19 @@ sequenceDiagram
     CLI-->>Eng: Rendered Markdown Diagnostic Panel
 ```
 
-## 📄 Component Definitions
+### 3. The 6-Step Self-Healing Loop
+The agent follows a standardized protocol to detect, diagnose, and resolve issues automatically.
+
+| Step | MCP Tool | Responsibility |
+|---|---|---|
+| **1. Find** | `get_failure_candidates` | Identify failed runs with `outcome=n`. |
+| **2. Diagnose** | `compare_runs` | Determine root cause (e.g., Knowledge Gap). |
+| **3. Propose** | `propose_fix` | Generate a non-LLM fix action. |
+| **4. Approve** | **Human Gate** | Wait for explicit approval before acting. |
+| **5. Apply** | Tool Execution | Run indexing or configuration fixes. |
+| **6. Verify** | `verify_fix` | Confirm resolution and log findings. |
+
+## Ã°Å¸â€œâ€ž Component Definitions
 
 | Module | Responsibility |
 |---|---|
@@ -94,4 +106,7 @@ sequenceDiagram
 | **`llm_client.py`** | The "Vocal Cords." Standardizes communication with high-performance LLMs. |
 | **`long_term.py`** | The "Archive." Manages the vector-based SQLite database and tracks **Indexed Repositories**. |
 | **`registry.py`** | The "Hands." Dynamically generates schemas for LLM tool-calling and dispatches execution. |
-| **`cli.py`** | The "Face." A sophisticated terminal interface with support for **Deep Diagnostics** and **REPL command parsing**. |
+| **`cli.py`** | The "Face." A sophisticated terminal interface with support for **Deep Diagnostics**, **REPL command parsing**, and the **6-step Self-Healing 'heal' command**. |
+
+---
+[← Back to README](../README.md)

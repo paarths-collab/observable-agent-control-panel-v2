@@ -46,12 +46,27 @@ observable-agent-control-panel/
 │   │   ├── analyzer.py         # Failure analysis + root cause engine
 │   │   ├── trace_db.py         # SQLite trace persistence
 │   │   └── observability.py    # Metrics + alerting
-│   └── server.py               # MCP server (14 tools for IDE agents)
+│   └── server.py               # MCP server (16 tools for IDE agents)
 │
 ├── tests/                      # 73 tests, all passing
 ├── docs/                       # Integration docs + agent prompt
 └── data/                       # Persistent SQLite databases
 ```
+
+---
+
+## 📚 Documentation
+
+Detailed guides and architecture deep-dives are available in the `docs/` directory:
+
+| Document | Description |
+|---|---|
+| [**Quick Start**](docs/quickstart.md) | Get the system running in under 5 minutes. |
+| [**Workflow Guide**](docs/workflow.md) | End-to-end operational workflow and logic. |
+| [**IDE Integration**](docs/ide_integration.md) | Connect to Antigravity, Cursor, or Cline via MCP. |
+| [**Agent Prompt**](docs/agent_prompt.md) | The system prompt to turn any IDE agent into a reliability engineer. |
+| [**DevOps Agent Architecture**](docs/devops_agent_architecture.md) | Deep dive into the orchestrator, memory, and tool registry. |
+| [**Control Panel Architecture**](docs/observable_agent_panel_architecture.md) | Deep dive into the monitoring, analysis, and self-healing engine. |
 
 ---
 
@@ -65,7 +80,7 @@ graph TB
 
     subgraph "🔍 Observable Agent Control Panel"
         direction TB
-        SRV["server.py<br/>MCP Server — 14 tools"]
+        SRV["server.py<br/>MCP Server — 16 tools"]
         ANA["analyzer.py<br/>Root Cause Engine"]
         TDB["trace_db.py<br/>SQLite Trace Store"]
         SRV --> ANA
@@ -123,7 +138,7 @@ Every DevOps agent run produces a complete trace record:
 
 ## 🔄 Self-Healing Agent Loop
 
-When Antigravity connects via MCP, it follows a 4-step automated loop:
+When Antigravity connects via MCP, it follows a 6-step automated loop:
 
 ```
 Observe → Diagnose → Propose Fix → Human Approves → Apply → Verify
@@ -142,7 +157,7 @@ See [`docs/agent_prompt.md`](docs/agent_prompt.md) to paste the full protocol in
 
 ---
 
-## 🛠️ MCP Tools Reference (14 Tools)
+## 🛠️ MCP Tools Reference (16 Tools)
 
 ### GitHub & Web
 | Tool | Description |

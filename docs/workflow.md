@@ -1,4 +1,4 @@
-# System Workflow & Logic — Observable Agent Control Panel
+# System Workflow & Logic Ã¢â‚¬â€ Observable Agent Control Panel
 
 This document details the end-to-end operational workflow of the system, from initial user query to automated self-healing and deep failure diagnosis.
 
@@ -8,18 +8,18 @@ The project is architecturally split into two halves: the **Executing Agent** (M
 
 ```mermaid
 graph TB
-    subgraph "👤 Engineer / IDE Agent"
+    subgraph "Ã°Å¸â€˜Â¤ Engineer / IDE Agent"
         Q["User Query / Audit Request"]
     end
 
-    subgraph "🔍 Observable Agent Panel (The Monitor)"
+    subgraph "Ã°Å¸â€Â Observable Agent Panel (The Monitor)"
         direction TB
         SRV["server.py<br/>MCP Entry Point"]
         ANA["analyzer.py<br/>Deep Diagnostic Engine"]
         TDB["trace_db.py<br/>SQLite Trace Store"]
     end
 
-    subgraph "🤖 DevOps Agent 
+    subgraph "Ã°Å¸Â¤â€“ DevOps Agent 
                 (The Monitored System)"
         direction TB
         ORCH["orchestrator.py<br/>Repo-Aware Reasoning"]
@@ -27,7 +27,7 @@ graph TB
         REG["registry.py<br/>Tool Dispatcher"]
     end
 
-    subgraph "💾 Persistence"
+    subgraph "Ã°Å¸â€™Â¾ Persistence"
         DB1[(memory.db<br/>Facts & Embeddings)]
         DB2[(traces.db<br/>Audit/Run Logs)]
     end
@@ -82,21 +82,34 @@ When multiple runs fail or performance degrades, the system triggers an LLM-powe
 sequenceDiagram
     participant IDE as IDE Agent
     participant MCP as MCP Server
-    participant Ana as Analyzer (LLM)
     participant DB as Trace DB
     
     IDE->>MCP: get_failure_candidates()
-    MCP-->>IDE: List of failed run IDs
+    MCP-->>IDE: List of failed IDs (Step 1)
     
-    IDE->>MCP: deep_diagnose_failures(id1, id2)
-    MCP->>Ana: Fetch traces & analyze patterns
-    Ana->>DB: Retrieve full hop history
-    DB-->>Ana: Tool calls, results, latency
-    Ana-->>MCP: [SUMMARY] | [ROOT CAUSE] | [STACK SEARCHES]
-    MCP-->>IDE: Synthesized Diagnostic Report
+    IDE->>MCP: compare_runs(failed, good)
+    MCP-->>IDE: Root Cause (Step 2)
     
-    IDE->>MCP: search_stackexchange(suggested_query)
+    IDE->>MCP: propose_fix(failed, root_cause)
+    MCP-->>IDE: Fix Proposal (Step 3)
+    
+    Note over IDE: Approval Gate (Step 4)
+    
+    IDE->>MCP: execute_fix / index_repo_prs
+    MCP-->>IDE: Fix Applied (Step 5)
+    
+    IDE->>MCP: verify_fix(original, new)
+    MCP-->>IDE: Verdict: FIXED (Step 6)
 ```
+
+| Step | MCP Tool | What Happens |
+|---|---|---|
+| 1. Find failures | `get_failure_candidates` | Locates runs with `outcome=n` or tool errors |
+| 2. Diagnose | `compare_runs` + `get_trace_detail` | Root cause: KNOWLEDGE GAP, TOOL FAILURE, ROUTING SHIFT |
+| 3. Propose | `propose_fix` | Rule-based fix proposal, no LLM needed |
+| 4. Approve | Human confirms | Gate Ã¢â‚¬â€ no action without explicit approval |
+| 5. Apply | `index_repo_prs` / tool retry | Fix executed |
+| 6. Verify | `verify_fix` | Returns `FIXED` or `NOT_FIXED`, max 3 attempts |
 
 ## 4. Operational Modes & Advanced Commands
 
@@ -111,6 +124,7 @@ sequenceDiagram
 - **`--explain <ID>`**: Render the agent's internal reasoning as Markdown.
 - **`--compare <ID1> <ID2>`**: Side-by-side structural comparison of two runs.
 - **`--deep-analyze <IDs>`**: LLM-powered pattern analysis across multiple failures.
+- **`heal`**: (Interactive Only) Trigger the automated 6-step self-healing loop.
 
 ## 5. Visibility & Persistence
 
@@ -118,3 +132,6 @@ sequenceDiagram
 *   **`data/memory.db`**: Stores vector-based semantic facts (PRs, Issues).
 *   **`data/traces.db`**: Stores every step taken by the agent for later auditing.
 *   **`.env`**: Holds `GROQ_API_KEY`, `GITHUB_TOKEN`, and `HF_TOKEN`.
+
+---
+[← Back to README](../README.md)

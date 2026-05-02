@@ -161,6 +161,106 @@ def cmd_search_logs(query: str):
     console.print()
 
 
+def cmd_self_heal(orchestrator: Optional[Orchestrator] = None):
+    """
+    Execute the standardized 6-step self-healing loop.
+    Find -> Diagnose -> Propose -> Approve -> Apply -> Verify
+    """
+    from observable_agent_panel.core.self_healing import get_failure_candidates, propose_fix, verify_fix
+    from observable_agent_panel.core.analyzer import root_cause_analysis
+    
+    console.print(Panel("[bold magenta]Step 1: Finding Failure Candidates[/bold magenta]", border_style="magenta"))
+    failures = get_failure_candidates(limit=3)
+    if not failures:
+        console.print("[green]No failure candidates found! System is healthy.[/green]")
+        return
+    
+    table = Table(title="Recent Failures")
+    table.add_column("#", style="dim")
+    table.add_column("Run ID", style="cyan")
+    table.add_column("Query", style="white")
+    table.add_column("Failed Tools", style="red")
+    for i, f in enumerate(failures, 1):
+        table.add_row(str(i), f["run_id"][:8], f["query"], ", ".join(f["failed_tools"]))
+    console.print(table)
+    
+    choice = Prompt.ask("\n[bold cyan]Select a failure to heal (or 'q' to quit)[/bold cyan]", default="1")
+    if choice.lower() == 'q': return
+    try:
+        target = failures[int(choice)-1]
+    except (ValueError, IndexError):
+        console.print("[red]Invalid selection.[/red]")
+        return
+        
+    # Step 2: Diagnose (Compare with a successful run or baseline)
+    console.print(Panel(f"[bold magenta]Step 2: Diagnosing Run {target['run_id'][:8]}[/bold magenta]", border_style="magenta"))
+    traces = trace_db.get_recent_traces(50)
+    successes = [t for t in traces if t.get("outcome") == "y"]
+    
+    root_cause = "Unknown error pattern."
+    if successes:
+        rca_text = root_cause_analysis(target, successes[0])
+        root_cause = rca_text.strip()
+    console.print(f"[bold yellow]Root Cause Identification:[/bold yellow]\n{root_cause}\n")
+    
+    # Step 3: Propose
+    console.print(Panel("[bold magenta]Step 3: Generating Fix Proposal[/bold magenta]", border_style="magenta"))
+    fix = propose_fix(target["run_id"], root_cause)
+    if fix.get("fix_type") == "manual_review":
+        console.print("[yellow]Automatic fix cannot be determined. Manual review required.[/yellow]")
+        return
+        
+    console.print(f"[bold green]Proposed Fix:[/bold green] {fix['fix_action']}")
+    console.print(f"[dim]Parameters: {fix['fix_params']}[/dim]\n")
+    
+    # Step 4: Approve
+    confirm = Prompt.ask("[bold red]Step 4: Approve Fix Execution?[/bold red]", choices=["y", "n"], default="n")
+    if confirm != "y":
+        console.print("[yellow]Fix aborted by user.[/yellow]")
+        return
+        
+    # Step 5: Apply
+    console.print(Panel("[bold magenta]Step 5: Applying Fix[/bold magenta]", border_style="magenta"))
+    if not orchestrator:
+        console.print("[red]Error: Orchestrator not initialized. Cannot apply fix in standalone mode.[/red]")
+        return
+        
+    params = fix["fix_params"]
+    tool_name = params.get("tool")
+    
+    with console.status(f"[bold yellow]Executing {tool_name}...[/bold yellow]"):
+        if tool_name == "index_repo_prs":
+            res = orchestrator.index_repo_prs(params["repo"], count=params["count"], storage="permanent")
+        elif tool_name == "index_repo_issues":
+            res = orchestrator.index_repo_issues(params["repo"], count=params["count"], storage="permanent")
+        else:
+            console.print(f"[red]Execution logic for tool '{tool_name}' not implemented in CLI yet.[/red]")
+            return
+            
+    if res.get("status") == "success":
+        console.print("[bold green]Fix applied successfully![/bold green]")
+    else:
+        console.print(f"[bold red]Fix failed: {res.get('message')}[/bold red]")
+        return
+        
+    # Step 6: Verify
+    console.print(Panel("[bold magenta]Step 6: Verifying Resolution[/bold magenta]", border_style="magenta"))
+    with console.status("[bold magenta]Re-running original query...[/bold magenta]"):
+        new_response = orchestrator.process_query(target["original_query"])
+        new_run_id = trace_db.last_run_id
+        
+    verification = verify_fix(target["run_id"], new_run_id)
+    if verification["verdict"] == "FIXED":
+        console.print("[bold green]✅ VERIFICATION SUCCESS: The agent now resolves this query correctly.[/bold green]")
+    else:
+        console.print("[bold red]❌ VERIFICATION FAILED: The fix did not resolve the underlying issue.[/bold red]")
+    
+    console.print("\n[bold blue]Verification Insights:[/bold blue]")
+    for insight in verification["root_cause_insights"]:
+        console.print(f"  • {insight}")
+    console.print()
+
+
 # ─── Main interactive loop ────────────────────────────────────────────────────
 
 def main() -> None:
@@ -206,6 +306,9 @@ def main() -> None:
         else:
             console.print("[red]Usage: python cli.py --search-logs <query>[/red]")
         return
+    if "--self-heal" in args:
+        # Requires full init, will be handled in main loop or separate entry
+        pass 
 
     # ── Interactive REPL ──────────────────────────────────────────────────────
     print_banner()
@@ -323,11 +426,16 @@ def main() -> None:
                     "  - 'Summarize' queries are optimized to use existing memory.\n\n"
                     "[bold yellow]System:[/bold yellow]\n"
                     "  [cyan]mcp[/cyan]                   - Show IDE integration instructions\n"
+                    "  [cyan]heal[/cyan]                  - Trigger 6-step self-healing loop\n"
                     "  [cyan]exit[/cyan]                  - Close the Control Panel",
                     title="Control Panel Help",
                     border_style="blue",
                 )
             )
+            continue
+
+        if user_input.lower() in ("heal", "--self-heal", "self-heal"):
+            cmd_self_heal(orchestrator)
             continue
 
         if user_input.lower() in ("traces", "--traces"):

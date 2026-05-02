@@ -1,15 +1,15 @@
-# Quick Start — Observable Agent Control Panel
+# Quick Start Ã¢â‚¬â€ Observable Agent Control Panel
 
 Welcome to the **Observable Agent Control Panel**. This guide will get you from a fresh clone to a running, observable DevOps agent in under 5 minutes.
 
-## 📋 Prerequisites
+## Ã°Å¸â€œâ€¹ Prerequisites
 - **Python 3.11+**
 - **GROQ API Key**: [Get one here](https://console.groq.com/keys)
 - **GitHub Token**: (Optional but recommended) [Create here](https://github.com/settings/tokens)
 
 ---
 
-## 🛠️ Step 1: Environment Setup
+## Ã°Å¸â€ºÂ Ã¯Â¸Â Step 1: Environment Setup
 
 1. **Clone and Navigate**:
    ```bash
@@ -40,7 +40,7 @@ Welcome to the **Observable Agent Control Panel**. This guide will get you from 
 
 ---
 
-## 🚀 Step 2: Choose Your Mode
+## Ã°Å¸Å¡â‚¬ Step 2: Choose Your Mode
 
 The system can be launched in two distinct modes.
 
@@ -50,10 +50,13 @@ Best for manual exploration and indexing your first repositories.
 ```bash
 python devops_agent/main.py --mode cli
 ```
-**Try this**: Type `index prs tiangolo/fastapi 10` to prime the agent's memory.
+**Key Commands**: 
+- `index prs tiangolo/fastapi 10`: Prime the agent's memory.
+- `heal`: Trigger the automated 6-step self-healing loop.
 
 ### Option B: MCP Server Mode
 Best for integration with AI Agents like **Antigravity**, **Cursor**, or **Cline**.
+Provides **16 specialized tools** for diagnostics and memory.
 
 ```bash
 python devops_agent/main.py --mode server
@@ -61,7 +64,7 @@ python devops_agent/main.py --mode server
 
 ---
 
-## 🔍 Step 3: Connect via MCP
+## Ã°Å¸â€Â Step 3: Connect via MCP
 
 The `mcp_config.json` for Antigravity is located at:
 `C:\Users\PaarthGala\.gemini\antigravity\mcp_config.json`
@@ -88,7 +91,7 @@ Ensure it contains the following configuration:
 
 ---
 
-## 🏁 Step 4: Verify the Workflow (Hardened Boundaries)
+## Ã°Å¸ÂÂ Step 4: Verify the Workflow (Hardened Boundaries)
 
 Ask your IDE Agent:
 > *"What repositories do I have indexed?"*
@@ -99,7 +102,7 @@ Ask your IDE Agent:
 
 ---
 
-## 📁 Important Directories
+## Ã°Å¸â€œÂ Important Directories
 
 | Path | Purpose |
 |---|---|
@@ -107,3 +110,6 @@ Ask your IDE Agent:
 | `observable_agent_panel/` | MCP server and diagnostic analysis engine. |
 | `data/` | **Persistence**: `memory.db` (facts) and `traces.db` (logs). |
 | `docs/` | **Guides**: `workflow.md`, `agent_prompt.md`, `architecture` deep-dives. |
+
+---
+[← Back to README](../README.md)
