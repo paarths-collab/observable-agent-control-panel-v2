@@ -19,7 +19,8 @@ graph TB
         TDB["trace_db.py<br/>SQLite Trace Store"]
     end
 
-    subgraph "🤖 DevOps Agent (The Monitored System)"
+    subgraph "🤖 DevOps Agent 
+                (The Monitored System)"
         direction TB
         ORCH["orchestrator.py<br/>Repo-Aware Reasoning"]
         LTM["long_term.py<br/>Scoped Semantic Memory"]
@@ -33,7 +34,7 @@ graph TB
 
     Q -->|"MCP tool call (Traced)"| SRV
     SRV -->|"deep_diagnose_failures"| ANA
-    SRV -->|"get_recent_traces"| TDB
+    SRV -->|"get_recent_traces / search_traces"| TDB
     SRV -->|"search_memory"| LTM
     SRV -->|"execute_tool"| REG
     ORCH -->|"Decision Logging"| TDB
@@ -64,7 +65,16 @@ flowchart TD
     Log --> Outcome{Final Answer}
 ```
 
-## 3. The Self-Healing Workflow (Deep Analysis)
+## 3. Strict Tool Usage Policy (The MCP Boundary)
+
+To ensure reliability and prevent hallucinations, the agent operates under a **Strict MCP-Only Policy**:
+
+1.  **Registry Enforcement**: The agent is programmatically and prompt-constrained to ONLY use tools listed in `devops_agent/tools/registry.py`.
+2.  **No General Knowledge**: The agent is instructed to avoid using its internal general knowledge for technical resolutions. If a solution is not found in the indexed memory or current tool results, it must admit the gap.
+3.  **No Unofficial Web Search**: Generic web search tools outside of the official `search_stackexchange` MCP tool are forbidden. This ensures that every fact cited by the agent can be traced back to a verifiable engineering source (GitHub or StackOverflow).
+4.  **Error Protocol**: If an MCP tool returns an error or empty result, the agent must report the failure rather than attempting to guess a solution or fall back to external search.
+
+## 4. The Self-Healing Workflow (Deep Analysis)
 
 When multiple runs fail or performance degrades, the system triggers an LLM-powered deep dive:
 
@@ -97,9 +107,10 @@ sequenceDiagram
 
 ### Diagnostic Commands (REPL & Shell)
 - **`--traces [N]`**: List the last N run IDs and their outcomes.
+- **`--search-logs <query>`**: (New) Search historical traces for error patterns or keywords.
 - **`--explain <ID>`**: Render the agent's internal reasoning as Markdown.
 - **`--compare <ID1> <ID2>`**: Side-by-side structural comparison of two runs.
-- **`--deep-analyze <IDs>`**: (New) LLM-powered pattern analysis across multiple failures.
+- **`--deep-analyze <IDs>`**: LLM-powered pattern analysis across multiple failures.
 
 ## 5. Visibility & Persistence
 

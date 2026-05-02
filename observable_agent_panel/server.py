@@ -22,6 +22,8 @@ Tools available to the IDE agent:
 
 import json
 import os
+import sys
+import io
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -30,6 +32,16 @@ from dotenv import load_dotenv
 
 # ── Robust path resolution ───────────────────────────────────────────────────
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Force UTF-8 for stdout/stderr to prevent "invalid character 'â'" on Windows
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+# Redirect stderr to a log file to ensure zero stdout pollution
+log_path = os.path.join(ROOT_DIR, "data", "mcp_server.log")
+os.makedirs(os.path.dirname(log_path), exist_ok=True)
+sys.stderr = open(log_path, 'a', encoding='utf-8', errors='replace')
+
 load_dotenv(dotenv_path=os.path.join(ROOT_DIR, ".env"))
 
 import time
@@ -71,9 +83,15 @@ def trace_mcp_tool(func):
             return result
         except Exception as e:
             latency_ms = (time.monotonic() - t_start) * 1000
+            error_msg = f"Tool execution failed: {str(e)}"
             trace_db.log_hop(tool_name, kwargs, "error", latency_ms)
             trace_db.finalize_trace(f"Error: {str(e)}")
-            raise e
+            # Return valid JSON error instead of raising
+            return json.dumps({
+                "status": "error",
+                "message": error_msg,
+                "suggestion": "Check logs or try a different query."
+            }, ensure_ascii=True)
     return wrapper
 
 # ── Lazy memory (no LLM client needed at startup) ────────────────────────────
@@ -116,7 +134,7 @@ def search_github_prs(query: str, repo: Optional[str] = None) -> str:
     The IDE agent should reason over these results to answer the user's question.
     """
     res = execute_tool("search_github_prs", {"query": query, "repo": repo})
-    return json.dumps(res, indent=2)
+    return json.dumps(res, indent=2, ensure_ascii=True)
 
 
 @mcp.tool()
@@ -128,7 +146,7 @@ def fetch_pr_diff(pr_number: int, repo: Optional[str] = None) -> str:
     The IDE agent should interpret the diff to explain what changed.
     """
     res = execute_tool("fetch_pr_diff", {"pr_number": pr_number, "repo": repo})
-    return json.dumps(res, indent=2)
+    return json.dumps(res, indent=2, ensure_ascii=True)
 
 
 # ─── Memory Tools ─────────────────────────────────────────────────────────────
@@ -155,7 +173,7 @@ def search_memory(query: str, top_k: int = 5) -> str:
         }
         for m in matches
     ]
-    return json.dumps({"matches": results, "count": len(results)}, indent=2)
+    return json.dumps({"matches": results, "count": len(results)}, indent=2, ensure_ascii=True)
 
 
 @mcp.tool()
@@ -166,7 +184,7 @@ def index_repo_prs(repo: str, count: int = 10, storage: str = "permanent") -> st
     Returns {status, message, indexed_count}.
     """
     res = _get_orchestrator().index_repo_prs(repo, count, storage)
-    return json.dumps(res, indent=2)
+    return json.dumps(res, indent=2, ensure_ascii=True)
 
 
 @mcp.tool()
@@ -177,20 +195,18 @@ def index_repo_issues(repo: str, count: int = 10, storage: str = "permanent") ->
     Returns {status, message, indexed_count}.
     """
     res = _get_orchestrator().index_repo_issues(repo, count, storage)
-    return json.dumps(res, indent=2)
+    return json.dumps(res, indent=2, ensure_ascii=True)
 
-
-# ─── StackExchange ────────────────────────────────────────────────────────────
 
 @mcp.tool()
 @trace_mcp_tool
 def search_stackexchange(query: str) -> str:
     """
-    Search StackOverflow for technical answers.
-    Returns a JSON list of {title, link, score, answer_count}.
+    Search StackOverflow for threads matching the query.
+    Returns JSON with top 5 results.
     """
     res = execute_tool("search_stackexchange", {"query": query})
-    return json.dumps(res, indent=2)
+    return json.dumps(res, indent=2, ensure_ascii=True)
 
 
 # ─── Observability Tools ──────────────────────────────────────────────────────
@@ -215,7 +231,7 @@ def get_recent_traces(count: int = 10) -> str:
         }
         for t in traces
     ]
-    return json.dumps(summary, indent=2)
+    return json.dumps(summary, indent=2, ensure_ascii=True)
 
 
 @mcp.tool()
@@ -243,7 +259,7 @@ def get_trace_detail(run_id: str) -> str:
         "outcome": t.get("outcome"),
         "explanation": t.get("explanation"),
         "memory_facts_used": t.get("memory_facts_used", []),
-    }, indent=2)
+    }, indent=2, ensure_ascii=True)
 
 
 @mcp.tool()
@@ -254,7 +270,7 @@ def analyze_performance() -> str:
     """
     from observable_agent_panel.core.analyzer import get_failure_report_data
     traces = trace_db.get_recent_traces(100)
-    return json.dumps(get_failure_report_data(traces), indent=2)
+    return json.dumps(get_failure_report_data(traces), indent=2, ensure_ascii=True)
 
 
 @mcp.tool()
@@ -267,7 +283,18 @@ def get_anomaly_alerts() -> str:
     from observable_agent_panel.core.analyzer import get_anomaly_alerts_data
     traces = trace_db.get_recent_traces(50)
     alerts = get_anomaly_alerts_data(traces)
-    return json.dumps({"alerts": alerts, "count": len(alerts)}, indent=2)
+    return json.dumps({"alerts": alerts, "count": len(alerts)}, indent=2, ensure_ascii=True)
+
+
+@mcp.tool()
+def search_traces(query: str, limit: int = 10) -> str:
+    """
+    Search historical agent run logs for specific keywords, error messages, or queries.
+    Returns a JSON list of {run_id, timestamp, query, final_answer, outcome, explanation}.
+    Use this to find out what errors the system has faced in the past or to summarize previous diagnostic sessions.
+    """
+    res = trace_db.search_traces(query, limit)
+    return json.dumps(res, indent=2, ensure_ascii=True)
 
 
 @mcp.tool()
@@ -311,7 +338,7 @@ def compare_runs(run_id_a: str, run_id_b: str) -> str:
         "run_a": _summary(t1),
         "run_b": _summary(t2),
         "root_cause_insights": insights,
-    }, indent=2)
+    }, indent=2, ensure_ascii=True)
 
 
 
@@ -345,7 +372,7 @@ def get_failure_candidates(limit: int = 5) -> str:
         }
         for t in failures[:limit]
     ]
-    return json.dumps({"failures": summaries, "total_found": len(failures)}, indent=2)
+    return json.dumps({"failures": summaries, "total_found": len(failures)}, indent=2, ensure_ascii=True)
 
 
 @mcp.tool()
@@ -370,7 +397,7 @@ def deep_diagnose_failures(run_ids: List[str]) -> str:
         return json.dumps({"error": "No valid run IDs provided."})
         
     report = deep_failure_analysis(traces)
-    return json.dumps({"report": report}, indent=2)
+    return json.dumps({"report": report}, indent=2, ensure_ascii=True)
 
 
 @mcp.tool()
@@ -430,7 +457,7 @@ def propose_fix(run_id: str, root_cause: str) -> str:
         "fix_action": fix_action,
         "fix_params": fix_params,
         "requires_human_approval": True,
-    }, indent=2)
+    }, indent=2, ensure_ascii=True)
 
 
 @mcp.tool()
@@ -478,7 +505,7 @@ def verify_fix(original_run_id: str, new_run_id: str) -> str:
         "original_run": _summary(original),
         "new_run": _summary(new_run),
         "root_cause_insights": insights,
-    }, indent=2)
+    }, indent=2, ensure_ascii=True)
 
 
 def main():

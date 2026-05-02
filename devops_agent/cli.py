@@ -141,6 +141,26 @@ def cmd_deep_analyze(run_ids: List[str]):
     ))
 
 
+def cmd_search_logs(query: str):
+    results = trace_db.search_traces(query, limit=10)
+    if not results:
+        console.print(f"[dim]No logs found matching '{query}'.[/dim]")
+        return
+    
+    console.print(f"\n[bold blue]Search Results for '{query}'[/bold blue]\n")
+    for r in results:
+        outcome = r.get("outcome") or "unrated"
+        color = "green" if outcome == "y" else "red" if outcome == "n" else "dim"
+        console.print(
+            f"[cyan]{r['run_id'][:8]}...[/cyan]  "
+            f"[dim]{r['timestamp'][:19]}[/dim]  "
+            f"[{color}]outcome={outcome}[/{color}]\n"
+            f"  [bold]Q:[/bold] {(r.get('query') or '')[:80]}\n"
+            f"  [bold]A:[/bold] {(r.get('final_answer') or '')[:80]}\n"
+        )
+    console.print()
+
+
 # ─── Main interactive loop ────────────────────────────────────────────────────
 
 def main() -> None:
@@ -178,6 +198,13 @@ def main() -> None:
             cmd_deep_analyze(ids)
         else:
             console.print("[red]Usage: python cli.py --deep-analyze <id1> <id2> ...[/red]")
+        return
+    if "--search-logs" in args:
+        idx = args.index("--search-logs")
+        if idx + 1 < len(args):
+            cmd_search_logs(args[idx + 1])
+        else:
+            console.print("[red]Usage: python cli.py --search-logs <query>[/red]")
         return
 
     # ── Interactive REPL ──────────────────────────────────────────────────────
@@ -289,6 +316,7 @@ def main() -> None:
                     "  [cyan]--analyze[/cyan]            - Show failure report and tool stats\n"
                     "  [cyan]--alerts[/cyan]             - Run anomaly detection on recent runs\n"
                     "  [cyan]--explain <ID>[/cyan]      - Show LLM rationale for a specific run\n"
+                    "  [cyan]--search-logs <query>[/cyan] - Search traces for error patterns\n"
                     "  [cyan]--compare <ID1> <ID2>[/cyan]- Side-by-side diff of two runs\n"
                     "  [cyan]--deep-analyze <IDs>[/cyan]- Multi-run LLM failure diagnosis\n\n"
                     "[bold yellow]Optimization:[/bold yellow]\n"
@@ -352,6 +380,12 @@ def main() -> None:
             # Skip flags like --deep or analyze
             ids = [p for p in parts if not p.startswith("-") and p != "analyze"]
             cmd_deep_analyze(ids)
+            continue
+
+        if user_input.lower().startswith("search-logs ") or \
+           user_input.lower().startswith("--search-logs "):
+            query = user_input.split(" ", 1)[1].strip()
+            cmd_search_logs(query)
             continue
 
         if user_input.lower() == "mcp":

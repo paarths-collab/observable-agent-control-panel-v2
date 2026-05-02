@@ -19,7 +19,8 @@ def _get_llm():
     from devops_agent.core.llm_client import LLMClient
     return LLMClient()
 
-console = Console()
+import sys
+console = Console(file=sys.stderr)
 
 # ─── Alert thresholds ────────────────────────────────────────────────────────
 ALERT_TOOL_FAIL_RATE = 0.50      # warn if a tool fails > 50 % of calls

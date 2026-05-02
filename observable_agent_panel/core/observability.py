@@ -9,13 +9,11 @@ from typing import Any, Dict
 
 import sys
 
-# Ensure stdout uses UTF-8 if possible
-if sys.platform == "win32":
-    import codecs
-    if sys.stdout.encoding != 'utf-8':
-        sys.stdout.reconfigure(encoding='utf-8')
+import sys
 
-console = Console()
+# Redirect console to stderr to prevent stdout pollution in MCP mode
+# while maintaining rich output for CLI users.
+console = Console(file=sys.stderr)
 
 
 def log_triage(score: float, threshold: float, decision: str) -> None:

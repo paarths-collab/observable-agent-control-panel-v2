@@ -8,6 +8,13 @@
 ![Context](https://img.shields.io/badge/Context-Semantic%20Memory-red)
 ![Observability](https://img.shields.io/badge/Observability-Traces%20%2B%20Root%20Cause-blueviolet)
 
+<br/>
+
+<video width="100%" controls>
+  <source src="demo/octaclaw_demo.mp4" type="video/mp4">
+  Your browser does not support the video tag.
+</video>
+
 </div>
 
 > **The DevOps agent is the thing being monitored. The Observable Agent Control Panel is the monitoring system. Every decision the agent makes — which tool it called, why it routed that way, whether it got the right answer — is logged, analyzed, and diagnosed. When it fails, you don't guess why. The panel tells you exactly what broke, why it broke, and what to fix.**
@@ -197,6 +204,12 @@ Ask Antigravity:
 > *"Diagnose the last agent failure and fix it"*
 
 It will call `get_failure_candidates` → `compare_runs` → `propose_fix` → ask for approval → apply → `verify_fix`.
+
+### 🛡️ Hardened Boundaries (New)
+To ensure the integrity of the institutional memory, the system now implements **Strict MCP Isolation**:
+1. **No External Fallbacks**: The `web_search` and `browser` tools are physically blocked at the registry level. 
+2. **Hard Repo-Not-Found Stop**: If a query targets an unindexed repository, the agent performs a hard stop rather than hallucinating or searching the web.
+3. **Encoding-Safe Transport**: The MCP layer is hardened against Windows encoding errors (forcing UTF-8 and zero-stdout-pollution) to ensure reliable communication with IDE agents.
 
 ---
 

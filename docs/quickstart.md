@@ -21,6 +21,7 @@ Welcome to the **Observable Agent Control Panel**. This guide will get you from 
    ```powershell
    # Windows PowerShell
    python -m venv .venv
+   # IMPORTANT: Always activate before running
    .\.venv\Scripts\Activate.ps1
    ```
 
@@ -87,14 +88,14 @@ Ensure it contains the following configuration:
 
 ---
 
-## 🏁 Step 4: Verify the Workflow
+## 🏁 Step 4: Verify the Workflow (Hardened Boundaries)
 
 Ask your IDE Agent:
 > *"What repositories do I have indexed?"*
 > or
 > *"Diagnose the last failed run."*
 
-If the agent responds using the `observable-agent-control-panel` tools, your setup is successful!
+**Strict Policy Test**: Try querying an unindexed repository (e.g., `django/django`). The agent is now configured to **hard stop** and report a missing repository error rather than falling back to web search.
 
 ---
 

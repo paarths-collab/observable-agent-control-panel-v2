@@ -1,63 +1,50 @@
 """
-Web search tools for Observable Agent Control Panel.
+Web tools for Observable Agent Control Panel.
+Includes StackExchange (Stack Overflow) search integration.
 """
 
-from typing import Dict, List
 import requests
+from typing import Any, Dict, List
 
-API_URL = "https://api.stackexchange.com/2.3/search/advanced"
-MAX_RESULTS = 5
-
-
-def search_stackexchange(query: str) -> Dict:
+def search_stackexchange(query: str) -> Dict[str, Any]:
     """
-    Search StackExchange (Stack Overflow) for relevant threads.
-    Returns top results with title, link, score, and answer count.
-    NOTE: The 'withbody' filter causes API issues — intentionally omitted.
+    Search StackOverflow for threads matching the query.
+    Returns a list of top 5 results.
     """
+    url = "https://api.stackexchange.com/2.3/search/advanced"
     params = {
         "order": "desc",
         "sort": "relevance",
         "q": query,
         "site": "stackoverflow",
-        "pagesize": MAX_RESULTS,
+        "pagesize": 5,
+        "filter": "default"
     }
-
+    
     try:
-        resp = requests.get(API_URL, params=params, timeout=20)
-        resp.raise_for_status()
-        data = resp.json()
-        items = data.get("items", [])
-
-        if not items:
-            return {
-                "status": "empty",
-                "message": f"No StackExchange results for query '{query}'.",
-                "results": [],
-            }
-
-        results: List[Dict] = []
-        for item in items[:MAX_RESULTS]:
-            results.append(
-                {
-                    "title": item.get("title"),
-                    "link": item.get("link"),
-                    "score": item.get("score", 0),
-                    "answer_count": item.get("answer_count", 0),
-                    "is_answered": item.get("is_answered", False),
-                    "tags": item.get("tags", []),
-                }
-            )
-
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        results = []
+        for item in data.get("items", []):
+            results.append({
+                "title": item.get("title"),
+                "link": item.get("link"),
+                "score": item.get("score"),
+                "answer_count": item.get("answer_count"),
+                "is_answered": item.get("is_answered"),
+                "tags": item.get("tags")
+            })
+            
         return {
             "status": "success",
+            "query": query,
             "results": results,
-            "quota_remaining": data.get("quota_remaining"),
+            "count": len(results)
         }
-
-    except requests.RequestException as e:
+    except Exception as e:
         return {
             "status": "error",
-            "message": f"StackExchange API request failed: {str(e)}",
-            "results": [],
+            "message": f"StackExchange search failed: {str(e)}"
         }

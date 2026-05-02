@@ -39,6 +39,10 @@ Action: (next tool if needed, or synthesize if sufficient)
 Final Answer: Cite every source used (PR #number, log line, StackExchange link). Be specific and actionable.
 
 Rules:
+- STRICT RULE: You must ONLY use the provided MCP tools. Do NOT use external web search, general knowledge, or any capabilities not explicitly listed in your tool registry.
+- ALWAYS use MCP tools first for any repository, code, or diagnostic queries.
+- NEVER fall back to web search unless explicitly instructed.
+- If an MCP tool returns an error, report the error — do not silently switch to web search.
 - Never guess when a tool can verify.
 - If a tool returns empty or errors, explicitly state that and try the next best option.
 - If you exhaust all tools without resolution, say exactly what you tried, what failed, and what the user should check manually.
@@ -56,6 +60,7 @@ Answer: State the known fix immediately, grounded in the memory fact.
 Caveat: If the memory is a partial match, explicitly say so and state what might have changed.
 
 Rules:
+- STRICT RULE: You must ONLY use the information provided in the retrieved memory. Do NOT supplement with external knowledge or search.
 - Be concise and actionable. The user needs the fix, not a summary.
 - Always cite the source (PR #number or issue ID) from devops_agent.memory.
 - If the memory match explains a root cause, state the root cause first, then the fix.
@@ -238,15 +243,20 @@ class Orchestrator:
                     repo_arg = arguments.get("repo")
                     indexed = self.memory.get_indexed_repos()
                     
+                    repo_arg = arguments.get("repo")
+                    indexed = self.memory.get_indexed_repos()
+                    
                     if repo_arg and repo_arg not in indexed:
-                        # Hard stop for unknown repos
-                        stop_msg = (
-                            f"Error: Repository '{repo_arg}' not found in institutional memory. "
-                            "This is a fatal context gap. STOP ALL TOOL HOPS NOW. "
-                            "Tell the user: 'Error: Repository not found. This failure has been logged for deep analysis.'"
-                        )
+                        # Hard stop for unknown repos - Feature 2: Self-Healing Protocol
+                        stop_msg = f"Error: Repository '{repo_arg}' not found in institutional memory."
                         log_error(f"Unknown repo block: {repo_arg}")
-                        messages.append({"role": "system", "content": stop_msg})
+                        
+                        # Finalize the trace immediately with the failure
+                        explanation = self._generate_explanation(user_query, hops, tool_results_log + [f"{tool_name}: REPO_NOT_FOUND"])
+                        trace_db.log_hop(tool_name, arguments, "error", 0)
+                        trace_db.finalize_trace(stop_msg, explanation=explanation)
+                        
+                        return stop_msg + " This failure has been logged for deep analysis. Please run 'get_failure_candidates' to diagnose."
                     else:
                         messages.append({"role": "system", "content": "Search returned no results."})
 

@@ -167,6 +167,31 @@ class TraceDB:
         ).fetchone()
         return self._row_to_dict(row) if row else None
 
+    def search_traces(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Search historical logs for specific error patterns or queries."""
+        # Split query into keywords for a slightly smarter search
+        keywords = query.split()
+        conditions = []
+        params = []
+        for kw in keywords:
+            conditions.append("(query LIKE ? OR final_answer LIKE ? OR explanation LIKE ?)")
+            params.extend([f"%{kw}%", f"%{kw}%", f"%{kw}%"])
+        
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+        params.append(limit)
+
+        rows = self.conn.execute(
+            f"""
+            SELECT run_id, timestamp, query, final_answer, outcome, explanation
+            FROM traces 
+            WHERE {where_clause}
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """,
+            tuple(params),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def _row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
         d = dict(row)
         d["hops"] = json.loads(d.get("hops") or "[]")

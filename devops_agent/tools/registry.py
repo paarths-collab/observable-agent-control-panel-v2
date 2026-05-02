@@ -88,6 +88,10 @@ class FetchProjectDocsInput(BaseModel):
     )
 
 
+class SearchStackexchangeInput(BaseModel):
+    """Input schema for search_stackexchange."""
+    query: str = Field(..., description="The search query for StackOverflow threads.")
+
 class SyntaxCheckPythonInput(BaseModel):
     """Input schema for syntax_check_python."""
     code: str = Field(
@@ -106,6 +110,8 @@ class SearchStackexchangeInput(BaseModel):
             "Search query for StackExchange (Stack Overflow)."
         ),
     )
+
+
 
 # ---------------------------------------------------------------------------
 # Tool Registry Mapping
@@ -232,12 +238,19 @@ def get_tool_schemas() -> List[Dict[str, Any]]:
     """Return a list of all tool schemas for LLM injection."""
     return [entry["schema"] for entry in TOOL_REGISTRY.values()]
 
-
 def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     """
     Execute a registered tool by name with the provided JSON arguments.
     Returns the raw tool result dict.
     """
+    # Explicitly block unauthorized fallbacks - Feature 2: Self-Healing Protocol
+    BLOCKED_TOOLS = ["web_search", "browser", "search_web", "google_search"]
+    if tool_name in BLOCKED_TOOLS:
+        return {
+            "status": "error",
+            "message": f"Web search is disabled. Use MCP institutional memory tools only (registry count: {len(TOOL_REGISTRY)}).",
+        }
+
     if tool_name not in TOOL_REGISTRY:
         return {
             "status": "error",

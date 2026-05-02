@@ -61,9 +61,8 @@ sequenceDiagram
     Mem-->>Orch: ["tiangolo/fastapi", "django/django"]
     
     alt If repo/xyz NOT in list
-        Orch->>Tools: search_github_prs(repo/xyz)
-        Tools-->>Orch: [Empty result]
-        Orch-->>Dev: "STOP: Repo/xyz is not indexed. Please run 'index prs repo/xyz'."
+        Orch->>Orch: Hard Stop (Block Registry)
+        Orch-->>Dev: "Error: Repository 'repo/xyz' not found in institutional memory."
     else If repo/xyz IS in list
         Orch->>Orch: Proceed with full diagnostic reasoning
     end
