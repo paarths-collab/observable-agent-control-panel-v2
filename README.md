@@ -10,9 +10,12 @@
 
 <br/>
 
-### 📽️ [View the Demo](demo/octaclaw_demo.mp4)
-
-*(Click above to play the demo video)*
+<div align="center">
+  <video width="100%" controls>
+    <source src="https://github.com/paarths-collab/observable-agent-control-panel-v2/raw/main/demo/octaclaw_demo.mp4" type="video/mp4">
+    Your browser does not support the video tag.
+  </video>
+</div>
 
 </div>
 
