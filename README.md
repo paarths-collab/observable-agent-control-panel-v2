@@ -183,9 +183,9 @@ cp .env.sample .env
 ```
 
 ### 2. Run the DevOps Agent (CLI)
-```bash
-.venv\Scripts\activate
-python devops_agent/main.py --mode cli
+```powershell
+# Run from the root directory
+python -m devops_agent.main --mode cli
 ```
 
 ### 3. Connect Antigravity via MCP
