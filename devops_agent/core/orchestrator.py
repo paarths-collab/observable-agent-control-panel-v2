@@ -241,9 +241,9 @@ class Orchestrator:
                     if repo_arg and repo_arg not in indexed:
                         # Hard stop for unknown repos
                         stop_msg = (
-                            f"CRITICAL: The repository '{repo_arg}' is NOT in your Institutional Memory list. "
-                            "GitHub search returned nothing. STOP ALL TOOL HOPS NOW. "
-                            "Inform the user that you have no context for this repo and suggest they run 'index prs <repo>'."
+                            f"Error: Repository '{repo_arg}' not found in institutional memory. "
+                            "This is a fatal context gap. STOP ALL TOOL HOPS NOW. "
+                            "Tell the user: 'Error: Repository not found. This failure has been logged for deep analysis.'"
                         )
                         log_error(f"Unknown repo block: {repo_arg}")
                         messages.append({"role": "system", "content": stop_msg})
