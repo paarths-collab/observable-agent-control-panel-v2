@@ -4,7 +4,7 @@
 
 ![Python](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python&logoColor=white)
 ![Protocol](https://img.shields.io/badge/Protocol-MCP-green)
-![Tests](https://img.shields.io/badge/Tests-73%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/Tests-77%20passing-brightgreen)
 ![Context](https://img.shields.io/badge/Context-Semantic%20Memory-red)
 ![Observability](https://img.shields.io/badge/Observability-Traces%20%2B%20Root%20Cause-blueviolet)
 
@@ -43,11 +43,12 @@ observable-agent-control-panel/
 ├── observable_agent_panel/     ← The monitoring system
 │   ├── core/
 │   │   ├── analyzer.py         # Failure analysis + root cause engine
+│   │   ├── self_healing.py     # Deterministic 6-step loop
 │   │   ├── trace_db.py         # SQLite trace persistence
 │   │   └── observability.py    # Metrics + alerting
 │   └── server.py               # MCP server (16 tools for IDE agents)
 │
-├── tests/                      # 73 tests, all passing
+├── tests/                      # 77 tests, all passing
 ├── docs/                       # Integration docs + agent prompt
 └── data/                       # Persistent SQLite databases
 ```
