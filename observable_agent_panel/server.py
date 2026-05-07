@@ -18,24 +18,23 @@ Tools available to the IDE agent:
   analyze_performance  — tool success rates and failure counts
   get_anomaly_alerts   — structured list of active system alerts
   compare_runs         — diff two runs + rule-based root cause analysis
+
+Now supports ASYNC execution.
 """
 
 import json
 import os
 import sys
-import io
+import time
+import asyncio
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-
 from mcp.server.fastmcp import FastMCP
 from dotenv import load_dotenv
+from functools import wraps
 
 # ── Robust path resolution ───────────────────────────────────────────────────
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-# Force UTF-8 for stdout/stderr to prevent "invalid character 'â'" on Windows
-if sys.stdout.encoding != 'utf-8':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 # Redirect stderr to a log file to ensure zero stdout pollution
 log_path = os.path.join(ROOT_DIR, "data", "mcp_server.log")
@@ -44,16 +43,14 @@ sys.stderr = open(log_path, 'a', encoding='utf-8', errors='replace')
 
 load_dotenv(dotenv_path=os.path.join(ROOT_DIR, ".env"))
 
-import time
-from functools import wraps
 from observable_agent_panel.core.trace_db import trace_db
 from devops_agent.memory.long_term import LongTermMemory
 from devops_agent.tools.registry import execute_tool
 
-# ── Trace Decorator for MCP visibility ───────────────────────────────────────
+# ── Trace Decorator for MCP visibility (Async) ───────────────────────────────
 def trace_mcp_tool(func):
     @wraps(func)
-    def wrapper(*args, **kwargs):
+    async def wrapper(*args, **kwargs):
         tool_name = func.__name__
         query = f"MCP: {tool_name}"
         if kwargs:
@@ -64,7 +61,7 @@ def trace_mcp_tool(func):
         
         t_start = time.monotonic()
         try:
-            result = func(*args, **kwargs)
+            result = await func(*args, **kwargs)
             latency_ms = (time.monotonic() - t_start) * 1000
             
             # Determine status from result content
@@ -127,25 +124,25 @@ mcp = FastMCP("Observable Agent Control Panel")
 
 @mcp.tool()
 @trace_mcp_tool
-def search_github_prs(query: str, repo: Optional[str] = None) -> str:
+async def search_github_prs(query: str, repo: Optional[str] = None) -> str:
     """
     Search for closed PRs matching a keyword query.
     Returns a JSON list of {number, title, url, state}.
     The IDE agent should reason over these results to answer the user's question.
     """
-    res = execute_tool("search_github_prs", {"query": query, "repo": repo})
+    res = await execute_tool("search_github_prs", {"query": query, "repo": repo})
     return json.dumps(res, indent=2, ensure_ascii=True)
 
 
 @mcp.tool()
 @trace_mcp_tool
-def fetch_pr_diff(pr_number: int, repo: Optional[str] = None) -> str:
+async def fetch_pr_diff(pr_number: int, repo: Optional[str] = None) -> str:
     """
     Fetch the diff and description for a specific PR number.
     Returns {title, body, diff, truncated, original_length}.
     The IDE agent should interpret the diff to explain what changed.
     """
-    res = execute_tool("fetch_pr_diff", {"pr_number": pr_number, "repo": repo})
+    res = await execute_tool("fetch_pr_diff", {"pr_number": pr_number, "repo": repo})
     return json.dumps(res, indent=2, ensure_ascii=True)
 
 
@@ -153,16 +150,12 @@ def fetch_pr_diff(pr_number: int, repo: Optional[str] = None) -> str:
 
 @mcp.tool()
 @trace_mcp_tool
-def search_memory(query: str, top_k: int = 5) -> str:
+async def search_memory(query: str, top_k: int = 5) -> str:
     """
     Semantic search over the indexed engineering knowledge base.
     Returns a JSON list of {issue, resolution, repo_name, score} sorted by relevance.
     The IDE agent should use these matches to ground its answer before calling other tools.
     """
-    # DEBUG LOGGING
-    with open(os.path.join(ROOT_DIR, "mcp_debug.log"), "a") as f:
-        f.write(f"{datetime.now().isoformat()} - search_memory(query='{query}') - Using DB: {os.path.join(ROOT_DIR, 'data', 'memory.db')}\n")
-        
     matches = _get_memory().search_memory(query, top_k=top_k)
     results = [
         {
@@ -178,41 +171,41 @@ def search_memory(query: str, top_k: int = 5) -> str:
 
 @mcp.tool()
 @trace_mcp_tool
-def index_repo_prs(repo: str, count: int = 10, storage: str = "permanent") -> str:
+async def index_repo_prs(repo: str, count: int = 10, storage: str = "permanent") -> str:
     """
     Fetch and index the most recent closed PRs from a repository into memory.
     Returns {status, message, indexed_count}.
     """
-    res = _get_orchestrator().index_repo_prs(repo, count, storage)
+    res = await _get_orchestrator().index_repo_prs(repo, count, storage)
     return json.dumps(res, indent=2, ensure_ascii=True)
 
 
 @mcp.tool()
 @trace_mcp_tool
-def index_repo_issues(repo: str, count: int = 10, storage: str = "permanent") -> str:
+async def index_repo_issues(repo: str, count: int = 10, storage: str = "permanent") -> str:
     """
     Fetch and index the most recent closed issues from a repository into memory.
     Returns {status, message, indexed_count}.
     """
-    res = _get_orchestrator().index_repo_issues(repo, count, storage)
+    res = await _get_orchestrator().index_repo_issues(repo, count, storage)
     return json.dumps(res, indent=2, ensure_ascii=True)
 
 
 @mcp.tool()
 @trace_mcp_tool
-def search_stackexchange(query: str) -> str:
+async def search_stackexchange(query: str) -> str:
     """
     Search StackOverflow for threads matching the query.
     Returns JSON with top 5 results.
     """
-    res = execute_tool("search_stackexchange", {"query": query})
+    res = await execute_tool("search_stackexchange", {"query": query})
     return json.dumps(res, indent=2, ensure_ascii=True)
 
 
 # ─── Observability Tools ──────────────────────────────────────────────────────
 
 @mcp.tool()
-def get_recent_traces(count: int = 10) -> str:
+async def get_recent_traces(count: int = 10) -> str:
     """
     List the most recent agent runs with run_ids, routing decisions, and outcomes.
     Returns a JSON list. Use run_id values with get_trace_detail or compare_runs.
@@ -235,7 +228,7 @@ def get_recent_traces(count: int = 10) -> str:
 
 
 @mcp.tool()
-def get_trace_detail(run_id: str) -> str:
+async def get_trace_detail(run_id: str) -> str:
     """
     Get the full hop-by-hop reasoning trace for a specific run.
     Returns {run_id, query, hops: [{tool, status, duration_ms}], explanation}.
@@ -263,7 +256,7 @@ def get_trace_detail(run_id: str) -> str:
 
 
 @mcp.tool()
-def analyze_performance() -> str:
+async def analyze_performance() -> str:
     """
     Return tool usage success rates and failure counts across recent runs.
     Returns {total_runs, success_rate, knowledge_gaps, hop_limit_hits, tool_stats}.
@@ -274,7 +267,7 @@ def analyze_performance() -> str:
 
 
 @mcp.tool()
-def get_anomaly_alerts() -> str:
+async def get_anomaly_alerts() -> str:
     """
     Return a list of active system anomalies (tool failure spikes, low similarity, etc.).
     Returns a JSON list of {type, message, severity}.
@@ -287,7 +280,7 @@ def get_anomaly_alerts() -> str:
 
 
 @mcp.tool()
-def search_traces(query: str, limit: int = 10) -> str:
+async def search_traces(query: str, limit: int = 10) -> str:
     """
     Search historical agent run logs for specific keywords, error messages, or queries.
     Returns a JSON list of {run_id, timestamp, query, final_answer, outcome, explanation}.
@@ -298,13 +291,13 @@ def search_traces(query: str, limit: int = 10) -> str:
 
 
 @mcp.tool()
-def compare_runs(run_id_a: str, run_id_b: str) -> str:
+async def compare_runs(run_id_a: str, run_id_b: str) -> str:
     """
     Diff two agent runs side-by-side and generate a root cause analysis.
     Returns {run_a, run_b, diff_fields, root_cause_insights}.
     The IDE agent can use these insights to explain regressions or improvements.
     """
-    from observable_agent_panel.core.analyzer import _root_cause_analysis
+    from observable_agent_panel.core.analyzer import root_cause_analysis as _root_cause
 
     def _resolve(run_id: str) -> Optional[Dict]:
         t = trace_db.get_trace(run_id)
@@ -331,7 +324,7 @@ def compare_runs(run_id_a: str, run_id_b: str) -> str:
             "outcome": t.get("outcome"),
         }
 
-    root_cause_text = _root_cause_analysis(t1, t2)
+    root_cause_text = _root_cause(t1, t2)
     insights = [line.strip().lstrip("• ") for line in root_cause_text.split("\n") if line.strip()]
 
     return json.dumps({
@@ -345,7 +338,7 @@ def compare_runs(run_id_a: str, run_id_b: str) -> str:
 # ─── Self-Healing Loop Tools ──────────────────────────────────────────────────
 
 @mcp.tool()
-def get_failure_candidates(limit: int = 5) -> str:
+async def get_failure_candidates(limit: int = 5) -> str:
     """
     Find recent agent runs that failed — either human-rated bad (outcome=n)
     or containing tool errors/empty results. This is the entry point for the
@@ -357,7 +350,7 @@ def get_failure_candidates(limit: int = 5) -> str:
 
 
 @mcp.tool()
-def deep_diagnose_failures(run_ids: List[str]) -> str:
+async def deep_diagnose_failures(run_ids: List[str]) -> str:
     """
     Perform an LLM-powered deep dive into multiple failed runs.
     Returns a synthesized report with root causes and suggested external search queries.
@@ -377,24 +370,24 @@ def deep_diagnose_failures(run_ids: List[str]) -> str:
     if not traces:
         return json.dumps({"error": "No valid run IDs provided."})
         
-    report = deep_failure_analysis(traces)
+    report = await deep_failure_analysis(traces)
     return json.dumps({"report": report}, indent=2, ensure_ascii=True)
 
 
 @mcp.tool()
-def propose_fix(run_id: str, root_cause: str) -> str:
+async def propose_fix(run_id: str, root_cause: str) -> str:
     """
     Given a failed run_id and the root cause string from compare_runs,
     returns a structured fix proposal. Rule-based — no LLM call.
     Returns {fix_type, fix_action, fix_params, requires_human_approval}.
     """
     from observable_agent_panel.core.self_healing import propose_fix as _propose
-    res = _propose(run_id, root_cause)
+    res = await _propose(run_id, root_cause)
     return json.dumps(res, indent=2, ensure_ascii=True)
 
 
 @mcp.tool()
-def verify_fix(original_run_id: str, new_run_id: str) -> str:
+async def verify_fix(original_run_id: str, new_run_id: str) -> str:
     """
     Compare a failed run against a new run to verify whether a fix worked.
     Returns {verdict: FIXED|NOT_FIXED, fix_verified, root_cause_insights, run summaries}.

@@ -345,7 +345,7 @@ def get_anomaly_alerts_data(traces: List[Dict[str, Any]]) -> List[Dict[str, Any]
 # Public alias so external modules can import without using private name
 root_cause_analysis = _root_cause_analysis
 
-def deep_failure_analysis(traces: List[Dict[str, Any]]) -> str:
+async def deep_failure_analysis(traces: List[Dict[str, Any]]) -> str:
     """
     LLM-powered analysis of multiple failed runs.
     Synthesizes common failure patterns and suggests solutions/StackOverflow queries.
@@ -379,6 +379,59 @@ def deep_failure_analysis(traces: List[Dict[str, Any]]) -> str:
 
     try:
         llm = _get_llm()
-        return llm.simple_chat(prompt)
+        return await llm.simple_chat(prompt)
     except Exception as e:
         return f"Deep analysis failed: {str(e)}"
+
+async def generate_dynamic_fix(run: Dict[str, Any], root_cause: str) -> Dict[str, Any]:
+    """
+    LLM-powered single-run fix generator.
+    Returns a structured fix proposal: {fix_type, fix_action, fix_params, explanation}.
+    """
+    llm = _get_llm()
+    
+    # Identify the target repo from query context
+    query = (run.get("query") or "").lower()
+    repo = "django/django" # default
+    if "fastapi" in query: repo = "tiangolo/fastapi"
+    elif "transformers" in query: repo = "huggingface/transformers"
+
+    # Build a detailed history of what happened
+    hops = run.get("hops", [])
+    history = []
+    for i, h in enumerate(hops, 1):
+        history.append(f"Hop {i}: {h.get('tool')} -> Status: {h.get('status')}")
+    
+    history_str = "\n".join(history) if history else "No tool hops executed."
+
+    prompt = [
+        {"role": "system", "content": (
+            "You are an Autonomous Self-Healing Agent. Given a failed execution trace, its history, and its root cause analysis, "
+            "you must propose a specific, executable fix.\n"
+            "Supported Fix Types:\n"
+            "- index_more_data: If the agent lacks context (params: {tool: 'index_repo_prs', repo: string, count: int})\n"
+            "- tool_config: If a specific tool is failing (params: {tool: string, action: 'retry'|'check_auth'})\n"
+            "- manual_review: If you cannot automate the fix.\n\n"
+            "Output EXACTLY a JSON block with: fix_type, fix_action, fix_params, explanation."
+        )},
+        {"role": "user", "content": (
+            f"Run ID: {run['run_id']}\n"
+            f"Query: {run.get('query')}\n"
+            f"History:\n{history_str}\n"
+            f"Root Cause: {root_cause}"
+        )},
+    ]
+    
+    try:
+        import json
+        raw = await llm.simple_chat(prompt)
+        # Clean potential markdown
+        clean = raw.strip().replace("```json", "").replace("```", "").strip()
+        return json.loads(clean)
+    except Exception as e:
+        return {
+            "fix_type": "manual_review",
+            "fix_action": f"Dynamic fix generation failed: {str(e)}",
+            "fix_params": {},
+            "explanation": "Fall back to manual review due to LLM error."
+        }

@@ -33,6 +33,11 @@ class TraceDB:
         self._init_db()
         self.current_run_id: Optional[str] = None
 
+    @property
+    def last_run_id(self) -> str:
+        """Returns the ID of the current or most recent run."""
+        return self.current_run_id or "unknown"
+
     # ------------------------------------------------------------------
     # Schema
     # ------------------------------------------------------------------

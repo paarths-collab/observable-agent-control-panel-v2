@@ -1,14 +1,11 @@
 """
 Integration tests for the observability layer wired into the Orchestrator.
-
-The LLM and GitHub API are mocked so these tests run fully offline.
-They verify that every code path (memory-only, hybrid, tools, hop-limit)
-correctly writes a structured trace to SQLite.
+Updated for ASYNC support.
 """
 
 import json
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, patch, MagicMock
 
 from devops_agent.core.orchestrator import Orchestrator, HIGH_CONFIDENCE, HYBRID_THRESHOLD
 from observable_agent_panel.core.trace_db import TraceDB
@@ -20,7 +17,7 @@ from devops_agent.memory.long_term import LongTermMemory
 
 @pytest.fixture
 def isolated_db(tmp_path):
-    """An isolated TraceDB backed by a temp file (not :memory: so we can inspect it)."""
+    """An isolated TraceDB backed by a temp file."""
     db = TraceDB(db_path=str(tmp_path / "test_traces.db"))
     return db
 
@@ -28,11 +25,33 @@ def isolated_db(tmp_path):
 @pytest.fixture
 def mock_llm():
     llm = MagicMock(spec=LLMClient)
-    llm.simple_chat.return_value = "Mocked LLM answer."
+    
+    # triage_json = json.dumps({"intent": "tools_only", "reasoning": "test"})
+    
+    def simple_chat_side_effect(messages):
+        # Identify triage vs answer vs explanation
+        system_content = messages[0]["content"] if messages else ""
+        if "Classify the user's query into one of these intents" in system_content:
+            # Detect intended routing from query if needed, or default
+            query = messages[-1]["content"].lower()
+            if "cors" in query or "auth" in query:
+                return json.dumps({"intent": "memory_only", "reasoning": "matched query keyword"})
+            if "diagnostic" in query or "failure" in query:
+                return json.dumps({"intent": "diagnostic", "reasoning": "diagnostic keyword"})
+            return json.dumps({"intent": "tools_only", "reasoning": "test default"})
+            
+        if "DevOps observability assistant" in system_content:
+            return "Plain English explanation."
+            
+        return "Mocked LLM answer."
+
+    llm.simple_chat = AsyncMock(side_effect=simple_chat_side_effect)
+    
     # Minimal valid tool-response: no tool_calls → stop immediately
-    llm.chat.return_value = {
+    llm.chat = AsyncMock(return_value={
         "choices": [{"message": {"content": "Mocked tool answer.", "tool_calls": None}}]
-    }
+    })
+    llm.summarize_for_memory = AsyncMock(return_value={"issue": "test", "fix": "test", "repo_name": "test", "tags": []})
     return llm
 
 
@@ -47,7 +66,8 @@ def orchestrator(mock_llm, isolated_db):
 
 # ─── Memory-only path ─────────────────────────────────────────────────────────
 
-def test_memory_path_creates_trace(orchestrator):
+@pytest.mark.asyncio
+async def test_memory_path_creates_trace(orchestrator):
     orch, db = orchestrator
     query = "How do I fix CORS in FastAPI?"
 
@@ -63,20 +83,21 @@ def test_memory_path_creates_trace(orchestrator):
     orch.memory.search_memory = MagicMock(return_value=[high_score_match])
     orch.temp_memory.search_memory = MagicMock(return_value=[])
 
-    orch.process_query(query)
+    await orch.process_query(query)
 
     traces = db.get_recent_traces(1)
     assert len(traces) == 1
     t = traces[0]
     assert t["query"] == query
-    assert t["routing_decision"] == "memory_only"
+    assert t["routing_decision"] == "memory_only (llm_intent)"
     assert t["similarity_score"] >= HIGH_CONFIDENCE
     assert t["final_answer"] == "Mocked LLM answer."
     assert t["hop_limit_hit"] == 0
     assert t["explanation"] is not None
 
 
-def test_memory_path_records_facts_used(orchestrator):
+@pytest.mark.asyncio
+async def test_memory_path_records_facts_used(orchestrator):
     orch, db = orchestrator
     high_score_match = {
         "score": HIGH_CONFIDENCE + 0.05,
@@ -89,7 +110,7 @@ def test_memory_path_records_facts_used(orchestrator):
     orch.memory.search_memory = MagicMock(return_value=[high_score_match])
     orch.temp_memory.search_memory = MagicMock(return_value=[])
 
-    orch.process_query("auth issue")
+    await orch.process_query("auth issue")
 
     t = db.get_recent_traces(1)[0]
     assert "JWT auth bug" in t["memory_facts_used"]
@@ -97,12 +118,13 @@ def test_memory_path_records_facts_used(orchestrator):
 
 # ─── Tools-first path ─────────────────────────────────────────────────────────
 
-def test_tools_path_creates_trace(orchestrator):
+@pytest.mark.asyncio
+async def test_tools_path_creates_trace(orchestrator):
     orch, db = orchestrator
     orch.memory.search_memory = MagicMock(return_value=[])
     orch.temp_memory.search_memory = MagicMock(return_value=[])
 
-    orch.process_query("What is a totally unknown error?")
+    await orch.process_query("What is a totally unknown error?")
 
     traces = db.get_recent_traces(1)
     assert len(traces) == 1
@@ -112,7 +134,8 @@ def test_tools_path_creates_trace(orchestrator):
     assert t["hop_limit_hit"] == 0
 
 
-def test_tools_path_records_hop(orchestrator):
+@pytest.mark.asyncio
+async def test_tools_path_records_hop(orchestrator):
     orch, db = orchestrator
 
     # First LLM call returns a tool_call, second call returns a final answer
@@ -137,8 +160,8 @@ def test_tools_path_records_hop(orchestrator):
     orch.memory.search_memory = MagicMock(return_value=[])
     orch.temp_memory.search_memory = MagicMock(return_value=[])
 
-    with patch("devops_agent.core.orchestrator.execute_tool", return_value={"status": "success", "results": []}):
-        orch.process_query("find a bug")
+    with patch("devops_agent.core.orchestrator.execute_tool", AsyncMock(return_value={"status": "success", "results": []})):
+        await orch.process_query("find a bug")
 
     t = db.get_recent_traces(1)[0]
     assert len(t["hops"]) == 1
@@ -149,7 +172,8 @@ def test_tools_path_records_hop(orchestrator):
 
 # ─── Hop-limit exhaustion path ────────────────────────────────────────────────
 
-def test_hop_limit_records_flag(orchestrator):
+@pytest.mark.asyncio
+async def test_hop_limit_records_flag(orchestrator):
     orch, db = orchestrator
 
     # Every LLM call returns a tool_call, forcing the loop to run until MAX_TOOL_HOPS
@@ -167,12 +191,13 @@ def test_hop_limit_records_flag(orchestrator):
             }
         }]
     }
+    orch.llm.chat.side_effect = None
     orch.llm.chat.return_value = tool_call_response
     orch.memory.search_memory = MagicMock(return_value=[])
     orch.temp_memory.search_memory = MagicMock(return_value=[])
 
-    with patch("devops_agent.core.orchestrator.execute_tool", return_value={"status": "success"}):
-        result = orch.process_query("impossible query")
+    with patch("devops_agent.core.orchestrator.execute_tool", AsyncMock(return_value={"status": "success"})):
+        result = await orch.process_query("impossible query")
 
     t = db.get_recent_traces(1)[0]
     assert t["hop_limit_hit"] == 1
@@ -181,14 +206,15 @@ def test_hop_limit_records_flag(orchestrator):
 
 # ─── Multiple sequential runs ─────────────────────────────────────────────────
 
-def test_multiple_runs_each_get_unique_trace(orchestrator):
+@pytest.mark.asyncio
+async def test_multiple_runs_each_get_unique_trace(orchestrator):
     orch, db = orchestrator
     orch.memory.search_memory = MagicMock(return_value=[])
     orch.temp_memory.search_memory = MagicMock(return_value=[])
 
-    orch.process_query("query one")
-    orch.process_query("query two")
-    orch.process_query("query three")
+    await orch.process_query("query one")
+    await orch.process_query("query two")
+    await orch.process_query("query three")
 
     traces = db.get_recent_traces(10)
     assert len(traces) == 3
@@ -196,14 +222,15 @@ def test_multiple_runs_each_get_unique_trace(orchestrator):
     assert len(run_ids) == 3  # all unique
 
 
-# ─── Outcome labeling (Feature 3) ────────────────────────────────────────────
+# ─── Outcome labeling ────────────────────────────────────────────
 
-def test_outcome_can_be_set_after_run(orchestrator):
+@pytest.mark.asyncio
+async def test_outcome_can_be_set_after_run(orchestrator):
     orch, db = orchestrator
     orch.memory.search_memory = MagicMock(return_value=[])
     orch.temp_memory.search_memory = MagicMock(return_value=[])
 
-    orch.process_query("any query")
+    await orch.process_query("any query")
     db.set_outcome("n")
 
     t = db.get_recent_traces(1)[0]

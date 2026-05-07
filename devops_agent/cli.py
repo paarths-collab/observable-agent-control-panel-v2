@@ -1,602 +1,467 @@
 """
 Rich-based CLI client for standalone DevOps Agent MCP demos.
-
-New observability commands:
-  python cli.py --analyze        # Feature 2: failure report
-  python cli.py --alerts         # Feature 6: anomaly alerts
-  python cli.py --traces [N]     # list recent N trace run IDs
-  python cli.py --explain <id>   # Feature 5: show explanation for a run
-  python cli.py --compare-runs <id1> <id2>  # Feature 4: diff two runs
+Provides a high-fidelity interactive environment for debugging the agent's logic.
+Now supports ASYNC execution.
 """
 
 import os
 import sys
-from typing import List, Optional
+import time
+import json
+import asyncio
+from typing import List, Optional, Dict, Any
 from dotenv import load_dotenv
+
+# Path resolution
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(ROOT_DIR)
+
 from rich.console import Console
 from rich.panel import Panel
-from rich.prompt import Prompt
+from rich.live import Live
 from rich.table import Table
 from rich.markdown import Markdown
+from rich.prompt import Prompt
+from rich.text import Text
+from rich.box import ROUNDED
+
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.styles import Style
 from prompt_toolkit.formatted_text import HTML
 
+# Local modules
 from devops_agent.core.llm_client import LLMClient
 from devops_agent.core.orchestrator import Orchestrator
 from devops_agent.memory.long_term import LongTermMemory
-from observable_agent_panel.core.observability import print_banner, print_response, log_error, log_info
+from observable_agent_panel.core.observability import (
+    print_banner,
+    print_response,
+    log_error,
+    log_info,
+    log_success,
+)
 from observable_agent_panel.core.trace_db import trace_db
-from observable_agent_panel.core.analyzer import print_failure_report, print_trace_diff, print_anomaly_alerts
+from observable_agent_panel.core.analyzer import (
+    print_failure_report,
+    print_trace_diff,
+    print_anomaly_alerts,
+    root_cause_analysis
+)
 from devops_agent.tools.github_tools import get_current_repo, set_current_repo, get_stored_repos
 
 load_dotenv()
 console = Console()
 
-
-class RepoCompleter(Completer):
+# --- Custom Completer for CLI ---
+class DevOpsCompleter(Completer):
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor.lower()
-        if text.startswith("repo ") or "index" in text:
+        
+        # Repository completions
+        if text.startswith("repo ") or text.startswith("index prs ") or text.startswith("index issues "):
             repos = get_stored_repos()
             word = document.get_word_before_cursor()
             for r in repos:
                 if word.lower() in r.lower():
                     yield Completion(r, start_position=-len(word))
+        
+        # Command completions
+        commands = ["help", "exit", "clear", "analyze", "traces", "explain", "compare", "heal", "alerts", "repo", "index prs", "index issues"]
+        if not " " in text:
+            word = document.get_word_before_cursor()
+            for cmd in commands:
+                if cmd.startswith(word.lower()):
+                    yield Completion(cmd, start_position=-len(word))
 
-
-# ─── Observability CLI entry-points ──────────────────────────────────────────
+# --- Observability Commands ---
 
 def cmd_analyze():
+    """Display the recent tool performance and failure report."""
     traces = trace_db.get_recent_traces(50)
     print_failure_report(traces)
 
-
 def cmd_alerts():
+    """Check for active system anomalies."""
     traces = trace_db.get_recent_traces(50)
     print_anomaly_alerts(traces)
 
-
-def cmd_traces(n: int = 20):
-    traces = trace_db.get_recent_traces(n)
+def cmd_traces(count: int = 20):
+    """List recent agent run IDs and metadata."""
+    traces = trace_db.get_recent_traces(count)
     if not traces:
-        console.print("[dim]No traces recorded yet.[/dim]")
+        console.print("[dim]No traces recorded in this session yet.[/dim]")
         return
-    console.print(f"\n[bold blue]Recent {len(traces)} Traces[/bold blue]\n")
+
+    table = Table(title=f"Recent {len(traces)} Agent Runs", box=ROUNDED)
+    table.add_column("Run ID", style="cyan")
+    table.add_column("Decision", style="bold")
+    table.add_column("Sim", style="green")
+    table.add_column("Hops", style="magenta")
+    table.add_column("Outcome", style="yellow")
+    table.add_column("Query (truncated)", style="white")
+
     for t in traces:
         score = t.get("similarity_score")
         score_str = f"{score:.3f}" if score is not None else "—"
         outcome = t.get("outcome") or "unrated"
-        hop_hit = " [red][HOP LIMIT][/red]" if t.get("hop_limit_hit") else ""
-        console.print(
-            f"[dim]{t['timestamp'][:19]}[/dim]  "
-            f"[cyan]{t['run_id']}[/cyan]  "
-            f"[bold]{t.get('routing_decision', '?'):12}[/bold]  "
-            f"sim={score_str}  "
-            f"hops={len(t.get('hops', []))}  "
-            f"outcome={outcome}{hop_hit}\n"
-            f"  [dim]↳ {(t.get('query') or '')[:80]}[/dim]"
+        
+        # Highlight hop limit hits
+        hop_limit_hit = t.get("hop_limit_hit", False)
+        hop_count = str(len(t.get("hops", [])))
+        if hop_limit_hit:
+            hop_count = f"[red]{hop_count}![/red]"
+            
+        table.add_row(
+            t["run_id"][:8],
+            t.get("routing_decision", "?"),
+            score_str,
+            hop_count,
+            outcome,
+            (t.get("query") or "")[:50] + "..."
         )
-    console.print()
+    console.print(table)
 
-
-def cmd_explain(run_id: str):
-    t = trace_db.get_trace(run_id)
+def cmd_explain(run_id_prefix: str):
+    """Fetch and display the plain-English explanation for a specific run."""
+    t = trace_db.get_trace(run_id_prefix)
     if not t:
-        # Try prefix match
+        # Try prefix matching
         recent = trace_db.get_recent_traces(100)
-        matches = [r for r in recent if r["run_id"].startswith(run_id)]
+        matches = [r for r in recent if r["run_id"].startswith(run_id_prefix)]
         if not matches:
-            console.print(f"[red]No trace found for run_id prefix '{run_id}'[/red]")
+            console.print(f"[red]No trace found for run_id starting with '{run_id_prefix}'[/red]")
             return
         t = matches[0]
-    console.print(Panel(
-        Markdown(t.get("explanation") or "[dim]No explanation generated for this run.[/dim]"),
-        title=f"[bold blue]Explanation — {t['run_id'][:8]}…[/bold blue]",
-        border_style="blue",
-    ))
 
+    console.print(Panel(
+        Markdown(t.get("explanation") or "_No explanation generated for this run._"),
+        title=f"Agent Reasoning Summary — {t['run_id'][:8]}",
+        border_style="blue",
+        padding=(1, 2)
+    ))
 
 def cmd_compare(id1: str, id2: str):
-    def resolve(run_id: str):
-        t = trace_db.get_trace(run_id)
-        if not t:
-            recent = trace_db.get_recent_traces(100)
-            matches = [r for r in recent if r["run_id"].startswith(run_id)]
-            return matches[0] if matches else None
-        return t
-
-    t1 = resolve(id1)
-    t2 = resolve(id2)
-    if not t1 or not t2:
-        console.print("[red]One or both trace IDs not found.[/red]")
-        return
-    print_trace_diff(t1, t2)
-
-
-def cmd_deep_analyze(run_ids: List[str]):
-    from observable_agent_panel.core.analyzer import deep_failure_analysis
-    
-    traces = []
-    for rid in run_ids:
+    """Compare two traces and show diff."""
+    def _resolve(rid):
         t = trace_db.get_trace(rid)
         if not t:
-            recent = trace_db.get_recent_traces(100)
-            matches = [r for r in recent if r["run_id"].startswith(rid)]
-            t = matches[0] if matches else None
-        if t:
-            traces.append(t)
-            
-    if not traces:
-        console.print("[red]No valid trace IDs found.[/red]")
-        return
-        
-    with console.status("[bold blue]Performing deep failure analysis...[/bold blue]"):
-        report = deep_failure_analysis(traces)
-        
-    console.print(Panel(
-        Markdown(report),
-        title=f"[bold red]Deep Failure Analysis ({len(traces)} runs)[/bold red]",
-        border_style="red"
-    ))
-
-
-def cmd_search_logs(query: str):
-    results = trace_db.search_traces(query, limit=10)
-    if not results:
-        console.print(f"[dim]No logs found matching '{query}'.[/dim]")
-        return
+            matches = [r for r in trace_db.get_recent_traces(100) if r["run_id"].startswith(rid)]
+            return matches[0] if matches else None
+        return t
     
-    console.print(f"\n[bold blue]Search Results for '{query}'[/bold blue]\n")
-    for r in results:
-        outcome = r.get("outcome") or "unrated"
-        color = "green" if outcome == "y" else "red" if outcome == "n" else "dim"
-        console.print(
-            f"[cyan]{r['run_id'][:8]}...[/cyan]  "
-            f"[dim]{r['timestamp'][:19]}[/dim]  "
-            f"[{color}]outcome={outcome}[/{color}]\n"
-            f"  [bold]Q:[/bold] {(r.get('query') or '')[:80]}\n"
-            f"  [bold]A:[/bold] {(r.get('final_answer') or '')[:80]}\n"
-        )
-    console.print()
+    t1, t2 = _resolve(id1), _resolve(id2)
+    if t1 and t2:
+        print_trace_diff(t1, t2)
+    else:
+        console.print("[red]One or both Trace IDs could not be found.[/red]")
 
-
-def cmd_self_heal(orchestrator: Optional[Orchestrator] = None):
+async def cmd_self_heal(orchestrator: Orchestrator):
     """
-    Execute the standardized 6-step self-healing loop.
-    Find -> Diagnose -> Propose -> Approve -> Apply -> Verify
+    Experimental: Interactive Self-Healing Loop. (Async)
+    1. Scan for failures
+    2. Analyze root cause vs successes
+    3. Generate tool-based fix
+    4. Apply & Verify
     """
     from observable_agent_panel.core.self_healing import get_failure_candidates, propose_fix, verify_fix
-    from observable_agent_panel.core.analyzer import root_cause_analysis
     
     console.print(Panel("[bold magenta]Step 1: Finding Failure Candidates[/bold magenta]", border_style="magenta"))
-    failures = get_failure_candidates(limit=3)
+    failures, total = get_failure_candidates(limit=3)
+    
     if not failures:
-        console.print("[green]No failure candidates found! System is healthy.[/green]")
+        console.print("[green]No high-priority failures detected. System is healthy.[/green]")
         return
     
-    table = Table(title="Recent Failures")
+    # Selection Table
+    table = Table(title="Failure Candidates for Healing", box=ROUNDED)
     table.add_column("#", style="dim")
     table.add_column("Run ID", style="cyan")
     table.add_column("Query", style="white")
     table.add_column("Failed Tools", style="red")
-    for i, f in enumerate(failures, 1):
-        table.add_row(str(i), f["run_id"][:8], f["query"], ", ".join(f["failed_tools"]))
-    console.print(table)
     
-    choice = Prompt.ask("\n[bold cyan]Select a failure to heal (or 'q' to quit)[/bold cyan]", default="1")
+    for i, f in enumerate(failures, 1):
+        hops = f.get("hops", [])
+        failed_tools = list(set([h["tool"] for h in hops if h["status"] in ("error", "empty")]))
+        table.add_row(str(i), f["run_id"][:8], f["query"][:60], ", ".join(failed_tools))
+    
+    console.print(table)
+    choice = Prompt.ask("\nSelect a candidate to heal (or 'q' to cancel)", default="1")
     if choice.lower() == 'q': return
+    
     try:
         target = failures[int(choice)-1]
     except (ValueError, IndexError):
         console.print("[red]Invalid selection.[/red]")
         return
-        
-    # Step 2: Diagnose (Compare with a successful run or baseline)
-    console.print(Panel(f"[bold magenta]Step 2: Diagnosing Run {target['run_id'][:8]}[/bold magenta]", border_style="magenta"))
-    traces = trace_db.get_recent_traces(50)
-    successes = [t for t in traces if t.get("outcome") == "y"]
+
+    # Step 2: Diagnose
+    console.print(Panel(f"Step 2: Diagnosing Root Cause for '{target['run_id'][:8]}'", border_style="magenta"))
+    successes = [t for t in trace_db.get_recent_traces(50) if t.get("outcome") == "y"]
     
-    root_cause = "Unknown error pattern."
-    if successes:
-        rca_text = root_cause_analysis(target, successes[0])
-        root_cause = rca_text.strip()
-    console.print(f"[bold yellow]Root Cause Identification:[/bold yellow]\n{root_cause}\n")
+    if not successes:
+        root_cause = "Insufficient success history to compare. Analyzing trace in isolation..."
+    else:
+        # Compare vs latest success
+        root_cause = root_cause_analysis(target, successes[0])
+        
+    console.print(f"[yellow]Root Cause Analysis:[/yellow]\n{root_cause}\n")
     
     # Step 3: Propose
-    console.print(Panel("[bold magenta]Step 3: Generating Fix Proposal[/bold magenta]", border_style="magenta"))
-    fix = propose_fix(target["run_id"], root_cause)
-    if fix.get("fix_type") == "manual_review":
-        console.print("[yellow]Automatic fix cannot be determined. Manual review required.[/yellow]")
-        return
-        
-    console.print(f"[bold green]Proposed Fix:[/bold green] {fix['fix_action']}")
-    console.print(f"[dim]Parameters: {fix['fix_params']}[/dim]\n")
+    console.print(Panel("Step 3: Generating Fix Proposal", border_style="magenta"))
+    fix_proposal = propose_fix(target["run_id"], root_cause)
     
-    # Step 4: Approve
-    confirm = Prompt.ask("[bold red]Step 4: Approve Fix Execution?[/bold red]", choices=["y", "n"], default="n")
-    if confirm != "y":
-        console.print("[yellow]Fix aborted by user.[/yellow]")
-        return
-        
-    # Step 5: Apply
-    console.print(Panel("[bold magenta]Step 5: Applying Fix[/bold magenta]", border_style="magenta"))
-    if not orchestrator:
-        console.print("[red]Error: Orchestrator not initialized. Cannot apply fix in standalone mode.[/red]")
-        return
-        
-    params = fix["fix_params"]
-    tool_name = params.get("tool")
+    console.print(f"[bold green]Proposed Action:[/bold green] {fix_proposal['fix_action']}")
+    console.print(f"[dim]Rationale: {fix_proposal['fix_type']}[/dim]")
+    console.print(f"Parameters: [cyan]{fix_proposal['fix_params']}[/cyan]\n")
     
-    with console.status(f"[bold yellow]Executing {tool_name}...[/bold yellow]"):
-        if tool_name == "index_repo_prs":
-            res = orchestrator.index_repo_prs(params["repo"], count=params["count"], storage="permanent")
-        elif tool_name == "index_repo_issues":
-            res = orchestrator.index_repo_issues(params["repo"], count=params["count"], storage="permanent")
+    if Prompt.ask("Apply this fix automatically?", choices=["y", "n"], default="n") != "y":
+        return
+        
+    # Step 4: Apply
+    console.print(Panel("Step 4: Applying Fix (Executing Tool)", border_style="magenta"))
+    params = fix_proposal["fix_params"]
+    tool_to_run = params.get("tool")
+    
+    with console.status(f"[bold blue]Running {tool_to_run}...[/bold blue]"):
+        if tool_to_run == "index_repo_prs":
+            res = await orchestrator.index_repo_prs(params["repo"], count=params["count"])
+        elif tool_to_run == "index_repo_issues":
+            res = await orchestrator.index_repo_issues(params["repo"], count=params["count"])
         else:
-            console.print(f"[red]Execution logic for tool '{tool_name}' not implemented in CLI yet.[/red]")
+            console.print(f"[red]Error: Auto-apply for tool '{tool_to_run}' not implemented in CLI.[/red]")
             return
             
     if res.get("status") == "success":
-        console.print("[bold green]Fix applied successfully![/bold green]")
+        console.print(f"[bold green]Fix Applied Successfully![/bold green] {res.get('message')}")
     else:
-        console.print(f"[bold red]Fix failed: {res.get('message')}[/bold red]")
+        console.print(f"[bold red]Fix Application Failed:[/bold red] {res.get('message')}")
         return
         
-    # Step 6: Verify
-    console.print(Panel("[bold magenta]Step 6: Verifying Resolution[/bold magenta]", border_style="magenta"))
-    with console.status("[bold magenta]Re-running original query...[/bold magenta]"):
-        new_response = orchestrator.process_query(target["original_query"])
+    # Step 5: Verify
+    console.print(Panel("Step 5: Verifying Resolution (Re-running Query)", border_style="magenta"))
+    with console.status("[bold blue]Agent is re-processing the original query...[/bold blue]"):
+        await orchestrator.process_query(target["query"])
         new_run_id = trace_db.last_run_id
-        
-    verification = verify_fix(target["run_id"], new_run_id)
-    if verification["verdict"] == "FIXED":
-        console.print("[bold green]✅ VERIFICATION SUCCESS: The agent now resolves this query correctly.[/bold green]")
-    else:
-        console.print("[bold red]❌ VERIFICATION FAILED: The fix did not resolve the underlying issue.[/bold red]")
     
-    console.print("\n[bold blue]Verification Insights:[/bold blue]")
-    for insight in verification["root_cause_insights"]:
-        console.print(f"  • {insight}")
-    console.print()
+    # Run the verification logic
+    ver_res = verify_fix(target["run_id"], new_run_id)
+    
+    if ver_res["verdict"] == "FIXED":
+        console.print("\n[bold green]✅ VERIFICATION SUCCESSFUL: The agent now handles this query correctly.[/bold green]")
+    else:
+        console.print("\n[bold red]❌ VERIFICATION FAILED: The agent still encounters issues.[/bold red]")
+        console.print(f"[dim]Reason: {ver_res['fix_verified']}[/dim]")
 
 
-# ─── Main interactive loop ────────────────────────────────────────────────────
-
-def main() -> None:
-    # ── Handle non-interactive CLI flags ──────────────────────────────────────
+async def main_async() -> None:
+    """Async entry point for the CLI."""
+    # Process potential CLI flags first (non-interactive)
     args = sys.argv[1:]
     if "--analyze" in args:
         cmd_analyze()
         return
-    if "--alerts" in args:
-        cmd_alerts()
-        return
-    if "--traces" in args:
-        idx = args.index("--traces")
-        n = int(args[idx + 1]) if idx + 1 < len(args) and args[idx + 1].isdigit() else 20
-        cmd_traces(n)
-        return
-    if "--explain" in args:
-        idx = args.index("--explain")
-        if idx + 1 < len(args):
-            cmd_explain(args[idx + 1])
-        else:
-            console.print("[red]Usage: python cli.py --explain <run_id>[/red]")
-        return
-    if "--compare-runs" in args:
-        idx = args.index("--compare-runs")
-        if idx + 2 < len(args):
-            cmd_compare(args[idx + 1], args[idx + 2])
-        else:
-            console.print("[red]Usage: python cli.py --compare-runs <id1> <id2>[/red]")
-        return
-    if "--deep-analyze" in args:
-        idx = args.index("--deep-analyze")
-        ids = args[idx + 1:]
-        if ids:
-            cmd_deep_analyze(ids)
-        else:
-            console.print("[red]Usage: python cli.py --deep-analyze <id1> <id2> ...[/red]")
-        return
-    if "--search-logs" in args:
-        idx = args.index("--search-logs")
-        if idx + 1 < len(args):
-            cmd_search_logs(args[idx + 1])
-        else:
-            console.print("[red]Usage: python cli.py --search-logs <query>[/red]")
-        return
+    
     if "--self-heal" in args:
-        # Requires full init, will be handled in main loop or separate entry
-        pass 
+        db_path = os.path.join(ROOT_DIR, "data", "memory.db")
+        memory = LongTermMemory(db_path=db_path)
+        orchestrator = Orchestrator(LLMClient(), memory)
+        await cmd_self_heal(orchestrator)
+        return
 
-    # ── Interactive REPL ──────────────────────────────────────────────────────
+    # Normal Interactive Session
     print_banner()
+    
+    # Initialize Core
+    try:
+        db_path = os.path.join(ROOT_DIR, "data", "memory.db")
+        memory = LongTermMemory(db_path=db_path)
+        llm = LLMClient()
+        orchestrator = Orchestrator(llm, memory)
+        log_success("Agent Core Initialized Successfully.")
+    except Exception as e:
+        log_error(f"Failed to initialize agent: {e}")
+        return
 
-    if not os.getenv("GROQ_API_KEY"):
-        log_error("GROQ_API_KEY environment variable is not set.")
-        console.print("[yellow]Set it with: export GROQ_API_KEY='your_key_here'[/yellow]")
-        sys.exit(1)
+    # Check for current repo
+    current_repo = get_current_repo()
+    if not current_repo:
+        console.print("[yellow]No default repository set. Use 'repo <org/name>' to target a codebase.[/yellow]")
+    else:
+        console.print(f"Targeting Repository: [bold cyan]{current_repo}[/bold cyan]")
 
-    if not os.getenv("GITHUB_TOKEN"):
-        console.print("\n[bold yellow]⚠️  Warning: GITHUB_TOKEN is not set.[/bold yellow]")
-        console.print("[dim]GitHub tools will be heavily rate-limited and may fail for search queries.[/dim]")
-        console.print("[dim]Set it with: export GITHUB_TOKEN='your_pat_here'[/dim]\n")
+    # Setup Prompt Session
+    style = Style.from_dict({
+        'prompt': 'ansicyan bold',
+    })
+    session = PromptSession(completer=DevOpsCompleter(), style=style)
 
-    log_info("Initializing memory and orchestrator...")
-    memory = LongTermMemory(db_path="data/memory.db")
-    llm = LLMClient()
-    orchestrator = Orchestrator(llm_client=llm, long_term=memory)
-
-    console.print(
-        Panel(
-            "[bold green]Observable Agent Control Panel CLI Ready[/bold green]\n"
-            f"Current Repo Context: [cyan]{get_current_repo()}[/cyan]\n"
-            "Note: 'Summarize' queries now prioritize existing memory without extraction.\n"
-            "Type your debugging query below. Type [bold cyan]'help'[/bold cyan] for all commands.\n"
-            "Type [bold yellow]'exit'[/bold yellow] to quit.",
-            title="Observable Agent Control Panel",
-            border_style="green",
-        )
-    )
-
-    session = PromptSession(completer=RepoCompleter())
+    console.print("\n[bold]Observable Agent Control Panel — Interactive Session[/bold]")
+    console.print("Type [cyan]help[/cyan] for available commands or [cyan]exit[/cyan] to quit.\n")
 
     while True:
         try:
-            user_input = session.prompt(HTML("\n<b><ansicyan>You</ansicyan></b>: ")).strip()
+            user_input = await session.prompt_async(HTML("<b><ansicyan>You</ansicyan></b>: "))
+            user_input = user_input.strip()
         except (EOFError, KeyboardInterrupt):
-            console.print("\n👋 Goodbye!")
             break
 
         if not user_input:
             continue
 
-        # Strip accidental 'python cli.py' or 'python main.py' prefix
-        if user_input.lower().startswith("python "):
-            for prefix in ["python cli.py ", "python main.py ", "python "]:
-                if user_input.lower().startswith(prefix):
-                    user_input = user_input[len(prefix):].strip()
-                    break
+        clean_input = user_input.lower()
 
-        if user_input.lower() in ("exit", "quit", "q"):
-            console.print("👋 Goodbye!")
+        # Handle Commands
+        if clean_input in ("exit", "quit", "q"):
             break
-
-        # ── Built-in commands ─────────────────────────────────────────────────
-        if user_input.lower() == "memories":
-            choice = Prompt.ask(
-                "\n[bold cyan]Browse memories (g)lobally or by (r)epo?[/bold cyan]",
-                choices=["g", "r"], default="g",
-            )
-            repo_filter = None
-            if choice == "r":
-                repos = get_stored_repos()
-                if not repos:
-                    console.print("[dim]No repositories found in database.[/dim]")
-                    continue
-                console.print("\n[bold blue]Available Repositories:[/bold blue]")
-                for idx, r in enumerate(repos, 1):
-                    console.print(f"  {idx}. {r}")
-                repo_idx_str = Prompt.ask("\n[bold cyan]Select a repo number[/bold cyan]")
-                try:
-                    repo_idx = int(repo_idx_str) - 1
-                    if 0 <= repo_idx < len(repos):
-                        repo_filter = repos[repo_idx]
-                    else:
-                        console.print("[red]Invalid selection.[/red]")
-                        continue
-                except ValueError:
-                    console.print("[red]Invalid number.[/red]")
-                    continue
-            facts = memory.list_facts(limit=100, repo_filter=repo_filter)
-            if not facts:
-                console.print("[dim]No memories stored yet.[/dim]")
-            else:
-                title = f"Saved Institutional Memories ({repo_filter or 'Global'}):"
-                console.print(f"\n[bold blue]{title}[/bold blue]")
-                for f in facts:
-                    repo = f.get("repo_name", "Unknown")
-                    console.print(
-                        f"[bold cyan][ID: {f['id']}][/bold cyan] [yellow][{repo}][/yellow]\n"
-                        f"  [dim]Issue:[/dim] {f['issue'][:80]}...\n"
-                        f"  [dim]Fix:[/dim] {f['resolution'][:80]}...\n"
-                    )
-                console.print(f"\n[dim]Showing {len(facts)} items.[/dim]")
-            continue
-
-        if user_input.lower() == "help":
-            console.print(
-                Panel(
-                    "[bold yellow]Core Commands:[/bold yellow]\n"
-                    "  [cyan]memories[/cyan]               - Browse saved institutional facts\n"
-                    "  [cyan]clear[/cyan]                  - Wipe all local memories\n"
-                    "  [cyan]repo <owner/name>[/cyan]     - Switch repository context\n"
-                    "  [cyan]repos[/cyan]                 - List indexed repositories\n"
-                    "  [cyan]index <repo>[/cyan]          - Index PRs/Issues into memory\n\n"
-                    "[bold yellow]Observability Commands (Copy-Pasteable Flags):[/bold yellow]\n"
-                    "  [cyan]--traces [N][/cyan]         - List last N agent runs (with IDs)\n"
-                    "  [cyan]--analyze[/cyan]            - Show failure report and tool stats\n"
-                    "  [cyan]--alerts[/cyan]             - Run anomaly detection on recent runs\n"
-                    "  [cyan]--explain <ID>[/cyan]      - Show LLM rationale for a specific run\n"
-                    "  [cyan]--search-logs <query>[/cyan] - Search traces for error patterns\n"
-                    "  [cyan]--compare <ID1> <ID2>[/cyan]- Side-by-side diff of two runs\n"
-                    "  [cyan]--deep-analyze <IDs>[/cyan]- Multi-run LLM failure diagnosis\n\n"
-                    "[bold yellow]Optimization:[/bold yellow]\n"
-                    "  - 'Summarize' queries are optimized to use existing memory.\n\n"
-                    "[bold yellow]System:[/bold yellow]\n"
-                    "  [cyan]mcp[/cyan]                   - Show IDE integration instructions\n"
-                    "  [cyan]heal[/cyan]                  - Trigger 6-step self-healing loop\n"
-                    "  [cyan]exit[/cyan]                  - Close the Control Panel",
-                    title="Control Panel Help",
-                    border_style="blue",
-                )
-            )
-            continue
-
-        if user_input.lower() in ("heal", "--self-heal", "self-heal"):
-            cmd_self_heal(orchestrator)
-            continue
-
-        if user_input.lower() in ("traces", "--traces"):
-            cmd_traces(20)
-            continue
         
-        if user_input.lower().startswith("traces ") or user_input.lower().startswith("--traces "):
-            parts = user_input.split()
-            n = 20
-            if len(parts) > 1:
-                try:
-                    n = int(parts[1])
-                except ValueError:
-                    pass
-            cmd_traces(n)
+        if clean_input == "help":
+            help_table = Table(title="Observable Agent Command Reference", box=ROUNDED, show_header=True, header_style="bold magenta")
+            help_table.add_column("Exact Command", style="cyan", no_wrap=True)
+            help_table.add_column("Type", style="dim")
+            help_table.add_column("Description", style="white")
+            
+            # Startup Flags
+            help_table.add_section()
+            help_table.add_row("--mode cli", "Shell Flag", "Start the interactive Control Panel.")
+            help_table.add_row("--mode server", "Shell Flag", "Start the MCP stdio server.")
+            help_table.add_row("--analyze", "Shell Flag", "Run analysis and exit.")
+            help_table.add_row("--self-heal", "Shell Flag", "Run interactive healing and exit.")
+            
+            # Interactive Commands
+            help_table.add_section()
+            help_table.add_row("repo <org/repo>", "Interactive", "Set the target repository.")
+            help_table.add_row("index prs <repo> [n]", "Interactive", "Index latest PRs into memory.")
+            help_table.add_row("index issues <repo> [n]", "Interactive", "Index latest issues into memory.")
+            help_table.add_row("analyze", "Interactive", "View performance and failures.")
+            help_table.add_row("traces", "Interactive", "List recent run metadata.")
+            help_table.add_row("explain <id>", "Interactive", "Show agent reasoning summary.")
+            help_table.add_row("compare <id1> <id2>", "Interactive", "Analyze diff between two runs.")
+            help_table.add_row("heal", "Interactive", "Launch self-healing wizard.")
+            help_table.add_row("alerts", "Interactive", "Check for system anomalies.")
+            help_table.add_row("clear", "Interactive", "Clear the terminal screen.")
+            help_table.add_row("help", "Interactive", "Show this reference table.")
+            help_table.add_row("exit / quit / q", "Interactive", "Exit the Control Panel.")
+            
+            console.print(help_table)
+            console.print("\n[dim]Note: Shell flags must be passed when starting the agent via main.py (e.g., [cyan]python devops_agent/main.py --analyze[/cyan]).[/dim]")
             continue
 
-        if user_input.lower() in ("analyze", "--analyze"):
+        if clean_input == "clear":
+            console.clear()
+            continue
+
+        if clean_input == "analyze":
             cmd_analyze()
             continue
-
-        if user_input.lower() in ("alerts", "--alerts"):
+            
+        if clean_input == "alerts":
             cmd_alerts()
             continue
 
-        if user_input.lower().startswith("compare ") or user_input.lower().startswith("--compare "):
-            parts = user_input.split()
-            if len(parts) < 3:
-                console.print("[red]Usage: --compare <id1> <id2>[/red]")
-            else:
+        if clean_input == "traces":
+            cmd_traces()
+            continue
+            
+        if clean_input == "heal":
+            await cmd_self_heal(orchestrator)
+            continue
+
+        if clean_input.startswith("explain "):
+            cmd_explain(clean_input.split()[1])
+            continue
+
+        if clean_input.startswith("compare "):
+            parts = clean_input.split()
+            if len(parts) >= 3:
                 cmd_compare(parts[1], parts[2])
-            continue
-
-        # Strip common prefixes if user pastes full command
-        if user_input.startswith("python cli.py "):
-            user_input = user_input.replace("python cli.py ", "").strip()
-        elif user_input.startswith("python -m devops_agent.main "):
-             user_input = user_input.replace("python -m devops_agent.main ", "").strip()
-
-        # Command: Explain
-        if user_input.lower().startswith("explain ") or user_input.lower().startswith("--explain "):
-            cmd_explain(user_input.split(" ", 1)[1].strip())
-            continue
-
-        # Command: Deep Analyze
-        if user_input.lower().startswith("deep-analyze ") or \
-           user_input.lower().startswith("--deep-analyze ") or \
-           user_input.lower().startswith("--deep analyze "):
-            parts = user_input.split()
-            # Skip flags like --deep or analyze
-            ids = [p for p in parts if not p.startswith("-") and p != "analyze"]
-            cmd_deep_analyze(ids)
-            continue
-
-        if user_input.lower().startswith("search-logs ") or \
-           user_input.lower().startswith("--search-logs "):
-            query = user_input.split(" ", 1)[1].strip()
-            cmd_search_logs(query)
-            continue
-
-        if user_input.lower() == "mcp":
-            console.print(
-                Panel(
-                    "[bold green]How to use this MCP Server in your IDE (Cursor / Cline)[/bold green]\n\n"
-                    "1. Open your IDE Settings / MCP Configuration.\n"
-                    "2. Add a new MCP Server:\n"
-                    "   - [bold]Type[/bold]: `command`\n"
-                    "   - [bold]Name[/bold]: `observable-agent-control-panel`\n"
-                    "   - [bold]Command[/bold]: `python`\n"
-                    f"   - [bold]Args[/bold]: `\"{os.path.abspath('main.py')}\"`, `--mode`, `server`\n\n"
-                    "3. [bold yellow]Copy-Pasteable Observability Flags:[/bold yellow]\n"
-                    f"   - Analysis: `python \"{os.path.abspath('cli.py')}\" --analyze`\n"
-                    f"   - Alerts:   `python \"{os.path.abspath('cli.py')}\" --alerts`\n"
-                    f"   - Traces:   `python \"{os.path.abspath('cli.py')}\" --traces 10`\n\n"
-                    "See [bold]docs/ide_integration.md[/bold] for full Cursor/Cline/Claude Desktop configs.",
-                    border_style="magenta",
-                )
-            )
-            continue
-
-        if user_input.lower() == "clear":
-            memory.clear_all()
-            console.print("[red]All memories cleared.[/red]")
-            continue
-
-        if user_input.lower().startswith("repo "):
-            new_repo = user_input.split(" ", 1)[1].strip()
-            if "/" in new_repo:
-                set_current_repo(new_repo)
-                console.print(f"[bold green]Switched repo context to:[/bold green] {new_repo}")
             else:
-                console.print("[red]Invalid format. Use owner/repo.[/red]")
+                console.print("[red]Usage: compare <id1> <id2>[/red]")
             continue
 
-        if user_input.lower().startswith("index") or user_input.lower().startswith("/index"):
-            parts = user_input.split(" ")
-            if parts[0].startswith("/"):
-                parts[0] = parts[0][1:]
-            if len(parts) < 2:
-                console.print("[red]Usage: index [prs|issues] <owner/repo> [count][/red]")
-                continue
-            idx_type = "prs"
-            repo_idx = 1
-            if parts[1].lower() in ["prs", "issues"]:
-                idx_type = parts[1].lower()
-                repo_idx = 2
-            if len(parts) <= repo_idx:
-                console.print("[red]Usage: index [prs|issues] <owner/repo> [count][/red]")
-                continue
-            repo_to_index = parts[repo_idx].strip()
-            count_to_index = 10
-            if len(parts) > repo_idx + 1:
-                try:
-                    count_to_index = int(parts[repo_idx + 1])
-                except ValueError:
-                    pass
-            with console.status(f"[bold yellow]Indexing {idx_type} from {repo_to_index}...[/bold yellow]"):
-                if idx_type == "prs":
-                    res = orchestrator.index_repo_prs(repo_to_index, count=count_to_index, storage="permanent")
+        if clean_input.startswith("repo "):
+            repo_name = user_input.split()[1]
+            set_current_repo(repo_name)
+            log_info(f"Target repository updated to: [bold]{repo_name}[/bold]")
+            continue
+
+        if clean_input.startswith("index prs "):
+            parts = user_input.split()
+            if len(parts) >= 3:
+                repo_name = parts[2]
+                count = int(parts[3]) if len(parts) > 3 else 10
+                with console.status(f"[bold blue]Indexing PRs from {repo_name}...[/bold blue]"):
+                    res = await orchestrator.index_repo_prs(repo_name, count=count)
+                if res["status"] == "success":
+                    log_success(res["message"])
                 else:
-                    res = orchestrator.index_repo_issues(repo_to_index, count=count_to_index, storage="permanent")
-                if res.get("status") == "success":
-                    console.print(f"[bold green]Successfully indexed {idx_type} from {repo_to_index}[/bold green]")
+                    log_error(res["message"])
+            else:
+                console.print("[red]Usage: index prs <org/repo> [count][/red]")
+            continue
+
+        if clean_input.startswith("index issues "):
+            parts = user_input.split()
+            if len(parts) >= 3:
+                repo_name = parts[2]
+                count = int(parts[3]) if len(parts) > 3 else 10
+                with console.status(f"[bold blue]Indexing issues from {repo_name}...[/bold blue]"):
+                    res = await orchestrator.index_repo_issues(repo_name, count=count)
+                if res["status"] == "success":
+                    log_success(res["message"])
                 else:
-                    console.print(f"[bold red]Indexing failed: {res.get('message')}[/bold red]")
+                    log_error(res["message"])
+            else:
+                console.print("[red]Usage: index issues <org/repo> [count][/red]")
             continue
 
-        if user_input.lower() == "repos":
-            repos = get_stored_repos()
-            console.print("[bold blue]Stored Repositories:[/bold blue]")
-            for r in repos:
-                mark = "*" if r == get_current_repo() else " "
-                console.print(f"{mark} {r}")
-            continue
-
-        # ── Process query ─────────────────────────────────────────────────────
-        with console.status("[bold magenta]Observable Agent Control Panel is thinking...[/bold magenta]"):
-            try:
-                response = orchestrator.process_query(user_input)
-            except Exception as e:
-                log_error(str(e))
-                continue
-
-        print_response(response)
-
-        # ── Feature 3: Human feedback loop ────────────────────────────────────
+        # Handle Regular Queries
+        from observable_agent_panel.core.observability import set_active_status, update_status
+        status = console.status("[bold cyan]ANALYZING_INTENT...[/bold cyan]", spinner="arc")
+        status.start()
+        set_active_status(status)
+        
         try:
-            rating = Prompt.ask(
-                "\n[dim]Was this answer helpful?[/dim]",
-                choices=["y", "n", "skip"],
-                default="skip",
-            )
-            if rating != "skip":
+            # Start clock
+            start_time = time.monotonic()
+            
+            # Call Async Orchestrator
+            response_text = await orchestrator.process_query(user_input)
+            
+            duration = time.monotonic() - start_time
+            
+            # Stop status before printing final response
+            status.stop()
+            
+            # Display Results
+            from observable_agent_panel.core.observability import print_response
+            print_response(response_text, source=orchestrator.last_run_source)
+            
+            # Feedback loop
+            console.print(f"[dim]RUN_ID: {trace_db.last_run_id[:8]} | LATENCY: {duration:.2f}s[/dim]")
+            
+            # Simple interactive rating
+            rating = Prompt.ask("\nRate this answer?", choices=["y", "n", "s"], default="s")
+            if rating != "s":
                 trace_db.set_outcome(rating)
-                if rating == "n":
-                    console.print(
-                        "[dim]Marked as unhelpful — logged for failure analysis.[/dim]"
-                    )
-        except (EOFError, KeyboardInterrupt):
-            pass
+                log_info(f"Answer rated: [bold]{'Success' if rating == 'y' else 'Failure'}[/bold]")
+            
+        except Exception as e:
+            status.stop()
+            set_active_status(None)
+            log_error(f"MISSION_FAILURE: {str(e)}")
+        finally:
+            set_active_status(None)
 
+    console.print("\n[bold blue]Session Ended.[/bold blue] Goodbye!")
+
+def main():
+    """Main entry point for the CLI."""
+    try:
+        asyncio.run(main_async())
+    except KeyboardInterrupt:
+        # Silently exit on Ctrl+C
+        pass
 
 if __name__ == "__main__":
     main()

@@ -1,21 +1,23 @@
 """
 LLM client wrapper for Groq API.
 Handles chat completions and tool-calling interactions.
+Now supports ASYNC execution.
 """
 
 import os
 import json
+import asyncio
 from typing import Any, Dict, List, Optional
-from groq import Groq
+from groq import AsyncGroq
 
 # Model config
-MODEL_NAME = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+MODEL_NAME = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 MAX_TOKENS = int(os.getenv("GROQ_MAX_TOKENS", "4096"))
 TEMPERATURE = float(os.getenv("GROQ_TEMPERATURE", "0.2"))
 
 
 class LLMClient:
-    """Minimal Groq client with tool support."""
+    """Async Groq client with tool support."""
 
     def __init__(self, api_key: Optional[str] = None) -> None:
         self.api_key = api_key or os.getenv("GROQ_API_KEY")
@@ -23,20 +25,36 @@ class LLMClient:
             raise ValueError(
                 "Groq API key is required. Set GROQ_API_KEY environment variable."
             )
-        self.client = Groq(api_key=self.api_key)
+        self.client = AsyncGroq(api_key=self.api_key)
 
-    def chat(
+    async def _call_with_retry(self, func, *args, **kwargs) -> Any:
+        """Execute async call with exponential backoff for 429 errors."""
+        max_retries = 3
+        base_delay = 5.0
+        for i in range(max_retries):
+            try:
+                return await func(*args, **kwargs)
+            except Exception as e:
+                if "429" in str(e) and i < max_retries - 1:
+                    wait = base_delay * (2 ** i)
+                    from observable_agent_panel.core.observability import log_info
+                    log_info(f"Rate limited (429). Retrying in {wait:.1f}s...")
+                    await asyncio.sleep(wait)
+                    continue
+                raise e
+
+    async def chat(
         self,
         messages: List[Dict[str, str]],
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: str = "auto",
+        model_override: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Send messages to Groq LLM.
-        If tools are provided, the model may return tool_calls.
+        Async: Send messages to Groq LLM with retry support.
         """
         kwargs: Dict[str, Any] = {
-            "model": MODEL_NAME,
+            "model": model_override or MODEL_NAME,
             "messages": messages,
             "temperature": TEMPERATURE,
             "max_tokens": MAX_TOKENS,
@@ -45,22 +63,23 @@ class LLMClient:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice
 
-        response = self.client.chat.completions.create(**kwargs)
+        response = await self._call_with_retry(self.client.chat.completions.create, **kwargs)
         return response.model_dump()
 
-    def simple_chat(self, messages: List[Dict[str, str]]) -> str:
+    async def simple_chat(self, messages: List[Dict[str, str]], model_override: Optional[str] = None) -> str:
         """
-        Convenience: chat without tools, return the assistant's text.
+        Async: Convenience: chat without tools, return assistant text.
         """
-        resp = self.chat(messages)
+        resp = await self.chat(messages, model_override=model_override)
         choice = resp["choices"][0]
         return choice["message"].get("content", "")
 
-    def summarize_for_memory(self, user_query: str, tool_results: str, answer: str) -> Dict[str, Any]:
+    async def summarize_for_memory(self, user_query: str, tool_results: str, answer: str) -> Dict[str, Any]:
         """
-        Ask the LLM to distill the interaction into a compact memory JSON.
-        Returns a dict: {"issue": str, "fix": str, "context": str, "tags": list}
+        Async: Distill interaction into a memory JSON using a lighter model.
         """
+        # Use lighter model for background tasks to save tokens
+        model = "llama-3.1-8b-instant" 
         messages = [
             {
                 "role": "system",
@@ -83,21 +102,18 @@ class LLMClient:
                 ),
             },
         ]
-        raw = self.simple_chat(messages).strip()
-        # Strip markdown code fences if present
-        if raw.startswith("```json"):
-            raw = raw[7:]
-        if raw.startswith("```"):
-            raw = raw[3:]
-        if raw.endswith("```"):
-            raw = raw[:-3]
+        raw_resp = await self.simple_chat(messages, model_override=model)
+        raw = raw_resp.strip()
+        # Clean markdown
+        if raw.startswith("```json"): raw = raw[7:]
+        if raw.startswith("```"): raw = raw[3:]
+        if raw.endswith("```"): raw = raw[:-3]
         raw = raw.strip()
 
         try:
             parsed = json.loads(raw)
             tags = parsed.get("tags", [])
-            if not isinstance(tags, list):
-                tags = [str(tags)]
+            if not isinstance(tags, list): tags = [str(tags)]
             return {
                 "issue": parsed.get("issue", user_query),
                 "fix": parsed.get("fix", answer),
@@ -105,20 +121,19 @@ class LLMClient:
                 "tags": tags,
             }
         except json.JSONDecodeError:
-            # Fallback: use the whole answer as fix
             return {"issue": user_query, "fix": answer, "context": "", "tags": []}
 
-    def summarize_pr(self, repo_name: str, pr_number: int, title: str, description: str, diff: str) -> Dict[str, Any]:
+    async def summarize_pr(self, repo_name: str, pr_number: int, title: str, description: str, diff: str) -> Dict[str, Any]:
         """
-        Summarize a GitHub PR into a structured fact for memory.
+        Async: Summarize a GitHub PR into memory fact using lighter model.
         """
+        model = "llama-3.1-8b-instant"
         messages = [
             {
                 "role": "system",
                 "content": (
                     "You are a DevOps intelligence engine. Analyze the provided GitHub PR "
-                    "(title, description, and diff) and extract the core issue it solves and "
-                    "the exact fix implemented. Output a JSON object with: "
+                    "and extract the core issue and fix. Output a JSON object with: "
                     "'issue', 'fix', 'context', and 'tags' (array). "
                     "Output ONLY raw JSON."
                 ),
@@ -133,9 +148,8 @@ class LLMClient:
                 ),
             },
         ]
-        raw = self.simple_chat(messages).strip()
-        # Clean markdown
-        raw = raw.replace("```json", "").replace("```", "").strip()
+        raw_resp = await self.simple_chat(messages, model_override=model)
+        raw = raw_resp.replace("```json", "").replace("```", "").strip()
 
         try:
             parsed = json.loads(raw)

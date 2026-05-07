@@ -20,7 +20,7 @@ def get_failure_candidates(limit: int = 5) -> List[Dict[str, Any]]:
         {
             "run_id": t["run_id"],
             "timestamp": t.get("timestamp", ""),
-            "query": (t.get("query") or "")[:100],
+            "query": t.get("query") or "",
             "routing_decision": t.get("routing_decision"),
             "similarity_score": t.get("similarity_score"),
             "outcome": t.get("outcome"),
@@ -33,7 +33,7 @@ def get_failure_candidates(limit: int = 5) -> List[Dict[str, Any]]:
     ]
     return summaries, len(failures)
 
-def propose_fix(run_id: str, root_cause: str) -> Dict[str, Any]:
+async def propose_fix(run_id: str, root_cause: str) -> Dict[str, Any]:
     """Rule-based fix proposal."""
     t = trace_db.get_trace(run_id)
     if not t:
@@ -45,45 +45,15 @@ def propose_fix(run_id: str, root_cause: str) -> Dict[str, Any]:
     if not t:
         return {"status": "error", "message": f"Run '{run_id}' not found."}
 
-    rc = root_cause.lower()
-    fix_type = fix_action = None
-    fix_params: Dict[str, Any] = {}
-
-    # Extract repo from query if possible, default to Django for demo consistency
-    query = (t.get("query") or "").lower()
-    repo = "django/django"
-    if "fastapi" in query: repo = "tiangolo/fastapi"
-    elif "transformers" in query: repo = "huggingface/transformers"
-
-    if "knowledge gap" in rc or "similarity" in rc or "insufficient indexed" in rc:
-        fix_type = "index_more_data"
-        fix_action = f"Index additional PRs for {repo} to expand the knowledge base"
-        fix_params = {"tool": "index_repo_prs", "repo": repo, "count": 30}
-
-    elif "tool failure" in rc and "github" in rc:
-        fix_type = "tool_config"
-        fix_action = "GitHub search tool failing — verify GITHUB_TOKEN and retry"
-        fix_params = {"tool": "search_github_prs", "action": "retry"}
-
-    elif "tool failure" in rc and "stack" in rc:
-        fix_type = "tool_config"
-        fix_action = "StackExchange tool failing — check API quota"
-        fix_params = {"tool": "search_stackexchange", "action": "retry"}
-
-    elif "hop limit" in rc or "efficiency delta" in rc:
-        fix_type = "index_more_data"
-        fix_action = f"Agent exhausted hops — index more context for {repo} to reduce tool dependency"
-        fix_params = {"tool": "index_repo_prs", "repo": repo, "count": 50}
-
-    elif "routing shift" in rc:
-        fix_type = "index_more_data"
-        fix_action = f"Memory routing changed — re-index {repo} to restore high-confidence path"
-        fix_params = {"tool": "index_repo_prs", "repo": repo, "count": 20}
-
-    else:
-        fix_type = "manual_review"
-        fix_action = "Cannot determine fix automatically — human review required"
-        fix_params = {}
+    from observable_agent_panel.core.analyzer import generate_dynamic_fix
+    
+    # Generate a dynamic proposal via LLM reasoning
+    fix = await generate_dynamic_fix(t, root_cause)
+    
+    # Ensure standard fields exist for CLI compatibility
+    fix_type = fix.get("fix_type", "manual_review")
+    fix_action = fix.get("fix_action", "Manual review required")
+    fix_params = fix.get("fix_params", {})
 
     return {
         "run_id": run_id,

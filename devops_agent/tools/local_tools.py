@@ -1,6 +1,7 @@
 """
 Local tool implementations for OctaClaw MCP.
 Custom actions and safe local utilities.
+Now supports ASYNC interface.
 """
 
 import ast
@@ -18,11 +19,13 @@ def _truncate(text: str, max_len: int = MAX_TEXT_LENGTH) -> Dict:
     return {"text": text, "truncated": truncated, "original_length": original_length}
 
 
-def read_local_error_log(filepath: str) -> Dict:
+async def read_local_error_log(filepath: str) -> Dict:
     """
-    Read a local log file and truncate to MAX_TEXT_LENGTH.
+    Async: Read a local log file and truncate to MAX_TEXT_LENGTH.
     """
     try:
+        # Note: In a real high-perf app, we'd use aiofiles here.
+        # Keeping it simple for the demo as disk I/O is local.
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
         if not content.strip():
@@ -57,9 +60,9 @@ def read_local_error_log(filepath: str) -> Dict:
         }
 
 
-def fetch_project_docs(filepath: str) -> Dict:
+async def fetch_project_docs(filepath: str) -> Dict:
     """
-    Read a local documentation file (e.g., architecture.md).
+    Async: Read a local documentation file (e.g., architecture.md).
     """
     try:
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
@@ -96,9 +99,9 @@ def fetch_project_docs(filepath: str) -> Dict:
         }
 
 
-def syntax_check_python(code: str) -> Dict:
+async def syntax_check_python(code: str) -> Dict:
     """
-    Perform a syntax-only check on Python code using ast.parse().
+    Async: Perform a syntax-only check on Python code using ast.parse().
     """
     try:
         ast.parse(code)

@@ -1,10 +1,12 @@
 """
 Orchestrator: the central brain of Observable Agent Control Panel.
 Handles triage, LLM routing, tool execution, and memory evolution.
+Now supports ASYNC execution.
 """
 
 import json
 import time
+import asyncio
 from typing import Any, Dict, List, Optional
 
 from devops_agent.core.llm_client import LLMClient
@@ -81,6 +83,7 @@ class Orchestrator:
         self.memory = long_term  # Fixed (Permanent)
         self.temp_memory = LongTermMemory(db_path=":memory:")  # Temp (Session-only)
         self.short_term = ShortTermMemory(max_turns=4)
+        self.last_run_source = "LIVE_DATA"
 
     def _get_scoped_prompt(self, base_prompt: str) -> str:
         """Inject current knowledge scope into the system prompt."""
@@ -95,54 +98,95 @@ class Orchestrator:
         
         return base_prompt + scope
 
-    def process_query(self, user_query: str) -> str:
+    async def process_query(self, user_query: str) -> str:
         """
-        End-to-end processing of a user query.
+        End-to-end processing of a user query. (Async)
         Returns the final text response.
         """
+        self.last_run_source = "LIVE_DATA"
         # Start a persistent trace for this run
         trace_db.start_trace(user_query)
 
         # ------------------------------------------------------------------
-        # 1. TRIAGE
+        # 1. LLM TRIAGE (UNDERSTANDING LAYER)
+        # ------------------------------------------------------------------
+        triage_result = await self._triage_with_llm(user_query)
+        intent = triage_result.get("intent", "tools_only")
+        reasoning = triage_result.get("reasoning", "Default routing")
+        
+        log_info(f"LLM Triage Intent: {intent} ({reasoning})")
+
+        # ------------------------------------------------------------------
+        # 2. DATA-DRIVEN ROUTING
         # ------------------------------------------------------------------
         fixed_matches = self.memory.search_memory(user_query, top_k=10)
         temp_matches = self.temp_memory.search_memory(user_query, top_k=10)
         all_matches = sorted(fixed_matches + temp_matches, key=lambda x: x["score"], reverse=True)
         
-        # ── Summary Keyword Bypass ──────────────────────────────────────────
-        summary_keywords = ["summarize", "overview", "summary", "summarise"]
-        is_summary_request = any(kw in user_query.lower() for kw in summary_keywords)
-        
         similarity = all_matches[0]["score"] if all_matches else 0.0
 
-        if is_summary_request and all_matches:
-            decision = "memory_only (forced summary)"
-            log_triage(similarity, HIGH_CONFIDENCE, decision)
+        # Act based on Intent + Similarity
+        if intent == "diagnostic":
+            return await self._route_diagnostic(user_query)
+        
+        if intent == "memory_only" or (intent == "hybrid" and similarity >= HIGH_CONFIDENCE):
+            decision = "memory_only (llm_intent)"
             trace_db.update_triage(similarity, decision)
-            trace_db.set_memory_facts([m.get("issue", "") for m in all_matches])
-            return self._route_memory(user_query, all_matches)
+            trace_db.set_memory_facts([m.get("issue", "") for m in all_matches[:4]])
+            return await self._route_memory(user_query, all_matches[:4])
 
-        if similarity >= HIGH_CONFIDENCE:
-            decision = "memory_only"
-            log_triage(similarity, HIGH_CONFIDENCE, decision)
+        if intent == "hybrid" or (intent == "tools_only" and similarity >= HYBRID_THRESHOLD):
+            decision = "hybrid (llm_intent)"
             trace_db.update_triage(similarity, decision)
             trace_db.set_memory_facts([m.get("issue", "") for m in all_matches[:4]])
-            return self._route_memory(user_query, all_matches[:4])
-        if similarity >= HYBRID_THRESHOLD:
-            decision = "hybrid"
-            log_triage(similarity, HYBRID_THRESHOLD, decision)
-            trace_db.update_triage(similarity, decision)
-            trace_db.set_memory_facts([m.get("issue", "") for m in all_matches[:4]])
-            return self._route_hybrid(user_query, all_matches[:4])
+            return await self._route_hybrid(user_query, all_matches[:4])
 
         decision = "tools_only"
-        log_triage(similarity, HYBRID_THRESHOLD, decision)
         trace_db.update_triage(similarity, decision)
-        return self._route_tools(user_query)
+        return await self._route_tools(user_query)
 
-    def _route_memory(self, user_query: str, matches: List[Dict[str, Any]]) -> str:
-        """High-confidence memory match: bypass tools, answer directly."""
+    async def _triage_with_llm(self, query: str) -> Dict[str, Any]:
+        """Use LLM to understand the query intent."""
+        prompt = [
+            {"role": "system", "content": (
+                "You are the triage layer of a DevOps reliability agent. "
+                "Classify the user's query into one of these intents:\n"
+                "1. 'memory_only': Questions about historical PRs, fixes, or knowledge the agent should already have.\n"
+                "2. 'tools_only': Requests to search GitHub, StackOverflow, or logs for fresh information.\n"
+                "3. 'hybrid': Complex queries that likely need both historical context and new searches.\n"
+                "4. 'diagnostic': Questions about the system itself, failures of the agent, or 'what happened in the last run'.\n"
+                "\nReturn ONLY a JSON object with 'intent' and 'reasoning'."
+            )},
+            {"role": "user", "content": query}
+        ]
+        try:
+            res_text = await self.llm.simple_chat(prompt)
+            # Basic cleanup in case LLM adds markdown blocks
+            if "```json" in res_text:
+                res_text = res_text.split("```json")[1].split("```")[0].strip()
+            return json.loads(res_text)
+        except Exception:
+            return {"intent": "tools_only", "reasoning": "Triage failed, falling back to tools."}
+
+    async def _route_diagnostic(self, user_query: str) -> str:
+        """Route to self-healing/diagnostic logic."""
+        prompt = self._get_scoped_prompt(SYSTEM_PROMPT_TOOLS)
+        diagnostic_context = (
+            "\n\n[DIAGNOSTIC MODE ACTIVE]\n"
+            "The user is asking about a failure or system state. "
+            "You have access to self-healing tools via your MCP registry: "
+            "get_failure_candidates, propose_fix, verify_fix, and analyze_performance. "
+            "Use these to answer questions about agent failures."
+        )
+        messages: List[Dict[str, Any]] = [
+            {"role": "system", "content": prompt + diagnostic_context},
+            {"role": "user", "content": user_query},
+        ]
+        return await self._run_tool_loop(user_query, messages)
+
+    async def _route_memory(self, user_query: str, matches: List[Dict[str, Any]]) -> str:
+        """High-confidence memory match: bypass tools, answer directly. (Async)"""
+        self.last_run_source = "CACHED_MEMORY"
         memory_json = self._format_memory_context(matches)
         prompt = self._get_scoped_prompt(SYSTEM_PROMPT_MEMORY)
         messages: List[Dict[str, Any]] = [
@@ -150,7 +194,7 @@ class Orchestrator:
             {"role": "system", "content": f"[MEMORY_JSON]\n{memory_json}"},
             {"role": "user", "content": user_query},
         ]
-        answer = self.llm.simple_chat(messages)
+        answer = await self.llm.simple_chat(messages)
         explanation = (
             f"The agent routed to MEMORY-ONLY because the similarity score ({matches[0].get('score', 0):.3f}) "
             f"exceeded the high-confidence threshold ({HIGH_CONFIDENCE}). "
@@ -161,9 +205,9 @@ class Orchestrator:
         self.short_term.add("assistant", answer)
         return answer
 
-    def _route_hybrid(self, user_query: str, matches: List[Dict[str, Any]]) -> str:
+    async def _route_hybrid(self, user_query: str, matches: List[Dict[str, Any]]) -> str:
         """
-        Partial confidence: inject memory plus tools.
+        Partial confidence: inject memory plus tools. (Async)
         """
         memory_json = self._format_memory_context(matches)
         prompt = self._get_scoped_prompt(SYSTEM_PROMPT_TOOLS)
@@ -172,30 +216,32 @@ class Orchestrator:
             {"role": "system", "content": f"[MEMORY_JSON]\n{memory_json}"},
             {"role": "user", "content": user_query},
         ]
-        return self._run_tool_loop(user_query, messages)
+        return await self._run_tool_loop(user_query, messages)
 
-    def _route_tools(self, user_query: str) -> str:
+    async def _route_tools(self, user_query: str) -> str:
         """
-        Low-confidence: tools-first routing.
+        Low-confidence: tools-first routing. (Async)
         """
         prompt = self._get_scoped_prompt(SYSTEM_PROMPT_TOOLS)
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": prompt},
             {"role": "user", "content": user_query},
         ]
-        return self._run_tool_loop(user_query, messages)
+        return await self._run_tool_loop(user_query, messages)
 
-    def _run_tool_loop(self, user_query: str, messages: List[Dict[str, Any]]) -> str:
-        """Execute tool-calling loop with hop limits and persistent trace logging."""
+    async def _run_tool_loop(self, user_query: str, messages: List[Dict[str, Any]]) -> str:
+        """Execute tool-calling loop with hop limits and persistent trace logging. (Async)"""
         tools = get_tool_schemas()
         tool_results_log: List[str] = []
         hops = 0
 
         while hops < MAX_TOOL_HOPS:
             hops += 1
+            from observable_agent_panel.core.observability import log_hop, update_status
             log_hop(hops, MAX_TOOL_HOPS)
+            update_status(f"THINKING_STEP_{hops}")
 
-            response = self.llm.chat(messages, tools=tools, tool_choice="auto")
+            response = await self.llm.chat(messages, tools=tools, tool_choice="auto")
             choice = response["choices"][0]
             message = choice["message"]
 
@@ -205,8 +251,8 @@ class Orchestrator:
                 self.short_term.add("user", user_query)
                 self.short_term.add("assistant", final_answer)
                 if tool_results_log:
-                    self._evolve_memory(user_query, tool_results_log, final_answer)
-                explanation = self._generate_explanation(user_query, hops, tool_results_log)
+                    await self._evolve_memory(user_query, tool_results_log, final_answer)
+                explanation = await self._generate_explanation(user_query, hops, tool_results_log)
                 trace_db.finalize_trace(final_answer, hop_limit_hit=False, explanation=explanation)
                 return final_answer
 
@@ -218,20 +264,21 @@ class Orchestrator:
                     arguments = {}
 
                 t_start = time.monotonic()
+                update_status(f"EXECUTING_{tool_name}")
                 if tool_name == "index_repo_prs":
-                    result = self.index_repo_prs(
+                    result = await self.index_repo_prs(
                         repo=arguments.get("repo"),
                         count=arguments.get("count", 5),
                         storage=arguments.get("storage", "permanent")
                     )
                 elif tool_name == "index_repo_issues":
-                    result = self.index_repo_issues(
+                    result = await self.index_repo_issues(
                         repo=arguments.get("repo"),
                         count=arguments.get("count", 5),
                         storage=arguments.get("storage", "permanent")
                     )
                 else:
-                    result = execute_tool(tool_name, arguments)
+                    result = await execute_tool(tool_name, arguments)
                 latency_ms = (time.monotonic() - t_start) * 1000
 
                 result_status = result.get("status", "unknown")
@@ -239,10 +286,11 @@ class Orchestrator:
                 # Persist hop to trace
                 trace_db.log_hop(tool_name, arguments, result_status, latency_ms)
 
+                # Flag as cached if data tools fail
+                if result_status in ("error", "empty") and tool_name in ("search_github_prs", "fetch_pr_diff", "get_closed_prs"):
+                    self.last_run_source = "CACHED_MEMORY"
+
                 if tool_name == "search_github_prs" and result_status == "empty":
-                    repo_arg = arguments.get("repo")
-                    indexed = self.memory.get_indexed_repos()
-                    
                     repo_arg = arguments.get("repo")
                     indexed = self.memory.get_indexed_repos()
                     
@@ -252,7 +300,7 @@ class Orchestrator:
                         log_error(f"Unknown repo block: {repo_arg}")
                         
                         # Finalize the trace immediately with the failure
-                        explanation = self._generate_explanation(user_query, hops, tool_results_log + [f"{tool_name}: REPO_NOT_FOUND"])
+                        explanation = await self._generate_explanation(user_query, hops, tool_results_log + [f"{tool_name}: REPO_NOT_FOUND"])
                         trace_db.log_hop(tool_name, arguments, "error", 0)
                         trace_db.finalize_trace(stop_msg, explanation=explanation)
                         
@@ -291,12 +339,12 @@ class Orchestrator:
             "Please refine your query."
         )
         log_error(error_msg)
-        explanation = self._generate_explanation(user_query, hops, tool_results_log)
+        explanation = await self._generate_explanation(user_query, hops, tool_results_log)
         trace_db.finalize_trace(error_msg, hop_limit_hit=True, explanation=explanation)
         return error_msg
 
-    def _generate_explanation(self, query: str, hops: int, tool_results: List[str]) -> str:
-        """Feature 5: one-paragraph plain-English explanation of what the agent did."""
+    async def _generate_explanation(self, query: str, hops: int, tool_results: List[str]) -> str:
+        """Feature 5: one-paragraph plain-English explanation of what the agent did. (Async)"""
         summary_lines = [f"Query: '{query[:100]}'", f"Hops executed: {hops}"]
         if tool_results:
             summary_lines.append("Tool results summary: " + " | ".join(tool_results)[:300])
@@ -310,7 +358,7 @@ class Orchestrator:
             {"role": "user", "content": "\n".join(summary_lines)},
         ]
         try:
-            return self.llm.simple_chat(prompt)
+            return await self.llm.simple_chat(prompt)
         except Exception:
             return "Explanation generation failed."
 
@@ -330,11 +378,11 @@ class Orchestrator:
             )
         return json.dumps(payload)
 
-    def _evolve_memory(
+    async def _evolve_memory(
         self, user_query: str, tool_results: List[str], answer: str
     ) -> None:
         """
-        Memory Evolution: summarize and persist the new fix.
+        Memory Evolution: summarize and persist the new fix. (Async)
         Only saves if the answer actually contains a resolution.
         """
         # Skip if the answer is a failure/not found message
@@ -343,7 +391,7 @@ class Orchestrator:
             return
 
         try:
-            summary = self.llm.summarize_for_memory(
+            summary = await self.llm.summarize_for_memory(
                 user_query, "\n".join(tool_results), answer
             )
             
@@ -356,31 +404,32 @@ class Orchestrator:
         except Exception as e:
             log_error(f"Memory evolution failed: {e}")
 
-    def index_repo_prs(self, repo: str, count: int = 10, storage: str = "permanent") -> Dict[str, Any]:
+    async def index_repo_prs(self, repo: str, count: int = 10, storage: str = "permanent") -> Dict[str, Any]:
         """
-        Tool implementation: Fetch recent PRs and index them into selected memory.
+        Tool implementation: Fetch recent PRs and index them into selected memory. (Async)
+        Supports concurrent PR processing for Feature 3.
         """
         log_info(f"Indexing the {count} latest closed PRs from {repo} into {storage} memory...")
         
         target_memory = self.memory if storage == "permanent" else self.temp_memory
         
         # 1. Fetch PR list
-        list_resp = get_closed_prs(repo=repo, count=count)
+        list_resp = await get_closed_prs(repo=repo, count=count)
         if list_resp["status"] != "success":
             return list_resp
             
         results = list_resp["results"]
         indexed_count = 0
         
-        for pr in results:
+        async def process_single_pr(pr):
             pr_num = pr["number"]
             # 2. Fetch Diff/Body
-            detail = fetch_pr_diff(pr_number=pr_num, repo=repo)
+            detail = await fetch_pr_diff(pr_number=pr_num, repo=repo)
             if detail["status"] != "success":
-                continue
+                return False
                 
             # 3. Summarize with LLM
-            fact = self.llm.summarize_pr(
+            fact = await self.llm.summarize_pr(
                 repo_name=repo,
                 pr_number=pr_num,
                 title=detail["title"],
@@ -388,19 +437,16 @@ class Orchestrator:
                 diff=detail["diff"]
             )
             
-            # 4. Save to memory (returns existing ID if duplicate)
-            new_id = target_memory.add_memory(fact)
+            # 4. Save to memory
+            target_memory.add_memory(fact)
             
-            from observable_agent_panel.core.observability import log_index_step, console
-            # Check if this was a new insertion by looking at the last row id if possible,
-            # or just rely on add_memory returning existing ID.
-            # We'll use a simple trick: if we didn't track it, we'll assume it might be new.
-            # But let's actually just check the count.
-            
-            # Since we can't easily tell if it was 'new' without changing the return type,
-            # let's just log it. The user will see the title.
+            from observable_agent_panel.core.observability import log_index_step
             log_index_step("PR", pr_num, detail["title"])
-            indexed_count += 1
+            return True
+
+        # CONCURRENT PROCESSING
+        results_processed = await asyncio.gather(*[process_single_pr(pr) for pr in results])
+        indexed_count = sum(1 for r in results_processed if r)
             
         return {
             "status": "success",
@@ -409,16 +455,16 @@ class Orchestrator:
             "indexed_count": indexed_count
         }
 
-    def index_repo_issues(self, repo: str, count: int = 10, storage: str = "permanent") -> Dict[str, Any]:
+    async def index_repo_issues(self, repo: str, count: int = 10, storage: str = "permanent") -> Dict[str, Any]:
         """
-        Tool implementation: Fetch recent closed Issues (bug reports) and index them.
+        Tool implementation: Fetch recent closed Issues (bug reports) and index them. (Async)
         """
         log_info(f"Indexing the {count} latest closed issues from {repo} into {storage} memory...")
         
         target_memory = self.memory if storage == "permanent" else self.temp_memory
         
         # 1. Fetch Issues
-        list_resp = get_repo_issues(repo=repo, count=count)
+        list_resp = await get_repo_issues(repo=repo, count=count)
         if list_resp["status"] != "success":
             return list_resp
             

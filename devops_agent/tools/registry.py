@@ -238,10 +238,9 @@ def get_tool_schemas() -> List[Dict[str, Any]]:
     """Return a list of all tool schemas for LLM injection."""
     return [entry["schema"] for entry in TOOL_REGISTRY.values()]
 
-def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+async def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Execute a registered tool by name with the provided JSON arguments.
-    Returns the raw tool result dict.
+    Async: Execute a registered tool by name with the provided JSON arguments.
     """
     # Explicitly block unauthorized fallbacks - Feature 2: Self-Healing Protocol
     BLOCKED_TOOLS = ["web_search", "browser", "search_web", "google_search"]
@@ -270,24 +269,24 @@ def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         # Validate arguments against Pydantic schema
         if tool_name == "search_github_prs":
             validated = SearchGithubPRsInput(**arguments)
-            result = func(query=validated.query, repo=validated.repo)
+            result = await func(query=validated.query, repo=validated.repo)
         elif tool_name == "fetch_pr_diff":
             validated = FetchPRDiffInput(**arguments)
-            result = func(pr_number=validated.pr_number, repo=validated.repo)
+            result = await func(pr_number=validated.pr_number, repo=validated.repo)
         elif tool_name == "read_local_error_log":
             validated = ReadLocalErrorLogInput(**arguments)
-            result = func(filepath=validated.filepath)
+            result = await func(filepath=validated.filepath)
         elif tool_name == "fetch_project_docs":
             validated = FetchProjectDocsInput(**arguments)
-            result = func(filepath=validated.filepath)
+            result = await func(filepath=validated.filepath)
         elif tool_name == "syntax_check_python":
             validated = SyntaxCheckPythonInput(**arguments)
-            result = func(code=validated.code)
+            result = await func(code=validated.code)
         elif tool_name == "search_stackexchange":
             validated = SearchStackexchangeInput(**arguments)
-            result = func(query=validated.query)
+            result = await func(query=validated.query)
         else:
-            result = func(**arguments)
+            result = await func(**arguments)
         return result
     except Exception as e:
         return {
